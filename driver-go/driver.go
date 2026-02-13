@@ -11,9 +11,6 @@ func Driver() {
 
 	elevio.Init("localhost:15657", numFloors)
 
-	var d elevio.MotorDirection = elevio.MD_Up
-	elevio.SetMotorDirection(d)
-
 	drv_buttons := make(chan elevio.ButtonEvent)
 	drv_floors := make(chan int)
 	drv_obstr := make(chan bool)
@@ -31,24 +28,14 @@ func Driver() {
 			elevio.SetButtonLamp(a.Button, a.Floor, true)
 
 		case a := <-drv_floors:
-			fmt.Printf("%+v\n", a)
-			if a == numFloors-1 {
-				d = elevio.MD_Down
-			} else if a == 0 {
-				d = elevio.MD_Up
-			}
-			elevio.SetMotorDirection(d)
+			fmt.Printf("Floor: %+v\n", a)
+			// Floor sensor updates are just logged, movement is controlled by ElevatorController
 
 		case a := <-drv_obstr:
-			fmt.Printf("%+v\n", a)
-			if a {
-				elevio.SetMotorDirection(elevio.MD_Stop)
-			} else {
-				elevio.SetMotorDirection(d)
-			}
+			fmt.Printf("Obstruction: %+v\n", a)
 
 		case a := <-drv_stop:
-			fmt.Printf("%+v\n", a)
+			fmt.Printf("Stop button: %+v\n", a)
 			for f := 0; f < numFloors; f++ {
 				for b := elevio.ButtonType(0); b < 3; b++ {
 					elevio.SetButtonLamp(b, f, false)
