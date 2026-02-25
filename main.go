@@ -1,27 +1,166 @@
 package main
 
 import (
-	elevatorcontroller "Heislab/ElevatorController"
-	driver "Heislab/driver-go"
+	"flag"
 	"fmt"
+	"strconv"
 	"time"
+
+	network "Heislab/Network"
+	"Heislab/driver-go/elevio"
+	"Heislab/timer"
 )
 
+const (
+	defaultElevatorPort = 15657
+	obstructionTimeout  = time.Second * 10
+	motorTimeout        = time.Second * 10
+)
+
+// Problems arising during FAT and other testing
+// - How to test disconnect :sad
+//   we make at home version
+
+// TODO: Final todo list before FAT:
+// - Convert door into its own process ✓
+// - Fully implement obstruction switch and motor blockage timers ✓
+// - Change elevator state sending from continuous to diff ✓
+// - Change peer list sending from continuous to diff ✓
+// - Implement virtual state for pending requests ✓
+// - Fix the request assigner ✓
+// - Do a *lot* more testing with packet loss, both working and not working
+// - Make the hardwareCommands solution cleaner [?]
+// - Gather everything into one repo ✓
+// - Review the structure of elevalgo ✓
+// - Read the project spec completely, and verify that everything works
+// - Do test FAT
+
+// A problem with packet loss:
+// -----------------------------
+// If there is high packet loss and an elevator disconnects, the other two elevators
+// may take requests which haven't been fully acked. This can happen if elevator 1
+// takes a request while elevator 3 is "disconnected", elevator 1 then detects that
+// only elevator 2 needs to ack, which happens, and then elevator 1 takes the request
+// with only an ack from elevator 2. If elevator 2 then dies, the request has not been
+// backed up
+// One reason why this may potentially not be such a huge problem is that
+// each elevator broadcasts its state either way, so there is a large chance
+// that elevator 3 will pick up that elevator 1 is taking the request anyways, and then
+// if elevator 1 dies, elevator 3 can take over / back up the request
+
+// But in general packet loss will ravage our elevator system
+// :DD
 func main() {
-	// Start elevator controller
-	_, hallRequestChan := driver.StartElevator("localhost:15657", 4)
+	network.NetworkExample()
 
-	// Inject temporary hall request for testing
-	go func() {
-		// Wait a moment for startup
-		time.Sleep(2 * time.Second)
+	//select {}
 
-		fmt.Println("Injecting Hall Request: Floor 3 Down")
-		requests := [elevatorcontroller.NumFloors][2]bool{}
-		requests[3][1] = true // Floor 3 Down
+	// ---- Flags ----
+	var port int
+	var id string
+	flag.IntVar(&port, "port", defaultElevatorPort, "Elevator server port")
+	flag.StringVar(&id, "id", "", "Network node id")
+	fmt.Println("Started!")
 
-		hallRequestChan <- requests
-	}()
+	flag.Parse()
 
-	select {}
+	// // ---- Initialize elevator ----
+	elevio.Init("localhost:"+strconv.Itoa(port), elevatorcontroller.NumFloors)
+	elevatorcontroller.InitFsm()
+	initElevator, doorOpenDuration := elevatorcontroller.InitBetweenFloors()
+
+	// ---- Initialize hardware communication ----
+	buttonEventChan := make(chan elevio.ButtonEvent, 1)
+	floorChan := make(chan int)
+	obstructionChan := make(chan bool)
+
+	go elevio.PollButtons(buttonEventChan)
+	go elevio.PollFloorSensor(floorChan)
+	go elevio.PollObstructionSwitch(obstructionChan)
+
+	obstructionInit := <-obstructionChan
+
+	// ---- Initialize timers ----
+	// Door timer
+	resetDoorTimerChan := make(chan int)
+	stopDoorTimerChan := make(chan int)
+	doorTimeoutChan := make(chan int)
+	go timer.RunTimer(resetDoorTimerChan, stopDoorTimerChan, doorTimeoutChan, doorOpenDuration, false, "Door timer")
+
+	// Obstruction timer
+	resetObstructionTimerChan := make(chan int)
+	stopObstructionTimerChan := make(chan int)
+	obstructionTimeoutChan := make(chan int)
+	go timer.RunTimer(resetObstructionTimerChan, stopObstructionTimerChan, obstructionTimeoutChan, obstructionTimeout, true, "Obstruction timer")
+
+	// Motor timer
+	resetMotorTimerChan := make(chan int)
+	stopMotorTimerChan := make(chan int)
+	motorTimeoutChan := make(chan int)
+	go timer.RunTimer(resetMotorTimerChan, stopMotorTimerChan, motorTimeoutChan, motorTimeout, true, "Motor timer")
+
+	// ---- Networking node communication ----
+	// TODO: Try unbuffering some of these channels and see what happens
+	orderChan := make(chan elevio.ButtonEvent, 1)
+	elevatorStateChan := make(chan elevatorcontroller.Elevator, 1)
+	peerStateChan := make(chan []elevatorcontroller.Elevator, 1)
+
+	// ---- Door communication ----
+	doorRequestChan := make(chan int)
+	doorCloseChan := make(chan int)
+
+	// ---- Lights communication
+	lightsElevatorStateChan := make(chan elevatorcontroller.Elevator, 1)
+
+	// ---- Disconnect ----
+	disconnectChan := make(chan int, 1)
+
+	// ---- Spawn core threads: networking, elevator, door and lights ----
+	go networkdriver.RunNetworkNode(
+		buttonEventChan,
+		elevatorStateChan,
+		orderChan,
+		peerStateChan,
+		disconnectChan,
+		initElevator,
+		id,
+	)
+
+	go networkdriver.RunManager(
+		networkSnapshotChan,  // ← consumes snapshot
+		managerElevStateChan, // ← consumes local elevator state
+		orderChan,
+		peerStateChan, // ← fans out to lights
+	)
+
+	go elevatorcontroller.RunElevator(
+		floorChan,
+		orderChan,
+		doorCloseChan,
+		doorRequestChan,
+		lightsElevatorStateChan,
+		elevatorStateChan,
+		resetMotorTimerChan,
+		stopMotorTimerChan,
+	)
+
+	go door.RunDoor(
+		obstructionChan,
+		doorTimeoutChan,
+		doorRequestChan,
+		doorCloseChan,
+		resetDoorTimerChan,
+		resetObstructionTimerChan,
+		stopObstructionTimerChan,
+		obstructionInit,
+	)
+
+	go lights.RunLights(lightsElevatorStateChan, peerStateChan)
+
+	go disconnector.RunDisconnector(disconnectChan)
+
+	for {
+		time.Sleep(time.Second)
+	}
+
 }

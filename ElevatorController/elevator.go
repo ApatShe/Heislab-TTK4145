@@ -42,12 +42,10 @@ type Config struct {
 
 // Elevator represents the state of a single elevator
 type Elevator struct {
-	Behaviour         ElevatorBehaviour
-	Floor             int
-	Dirn              elevio.MotorDirection
-	CabRequests       [NumFloors]bool
-	HallRequests      [NumFloors][2]bool
-	ObstructionActive bool
+	Behaviour   ElevatorBehaviour
+	Floor       int
+	Direction   elevio.MotorDirection
+	CabRequests [NumFloors]bool
 
 	Config Config
 }
@@ -61,11 +59,10 @@ type DirnBehaviourPair struct {
 // ElevatorUninitialized returns a new elevator in the uninitialized state.
 func ElevatorUninitialized() *Elevator {
 	return &Elevator{
-		Floor:        -1,
-		Dirn:         elevio.MD_Stop,
-		CabRequests:  [NumFloors]bool{},
-		HallRequests: [NumFloors][2]bool{},
-		Behaviour:    EB_Idle,
+		Floor:       -1,
+		Direction:   elevio.MD_Stop,
+		CabRequests: [NumFloors]bool{},
+		Behaviour:   EB_Idle,
 		Config: Config{
 			DoorOpenDuration: 3 * time.Second,
 		},
@@ -73,35 +70,35 @@ func ElevatorUninitialized() *Elevator {
 }
 
 // ElevatorPrint prints the current elevator state (for debugging)
-func ElevatorPrint(e *Elevator) {
+func ElevatorPrint(elevator *Elevator) {
 	fmt.Printf("  +----+-----+---+----------+\n")
 	fmt.Printf("  |%-4s| ^ v | C |%-10s|\n", "Flr", "Behaviour")
 	fmt.Printf("  +----+-----+---+----------+\n")
 	for f := NumFloors - 1; f >= 0; f-- {
 		floorMarker := " "
-		if e.Floor == f {
+		if elevator.Floor == f {
 			floorMarker = "*"
 		}
 		hUp := "-"
-		if e.HallRequests[f][0] {
+		if //elevator.HallRequests[f][0] {
 			hUp = "^"
 		}
 		hDn := "-"
-		if e.HallRequests[f][1] {
+		if //elevator.HallRequests[f][1] {
 			hDn = "v"
 		}
 		cab := "-"
-		if e.CabRequests[f] {
+		if elevator.CabRequests[f] {
 			cab = "C"
 		}
-		if f == e.Floor {
-			fmt.Printf("%s |%-4d| %s %s | %s |%-10s|\n", floorMarker, f, hUp, hDn, cab, e.Behaviour.String())
+		if f == elevator.Floor {
+			fmt.Printf("%s |%-4d| %s %s | %s |%-10s|\n", floorMarker, f, hUp, hDn, cab, elevator.Behaviour.String())
 		} else {
 			fmt.Printf("%s |%-4d| %s %s | %s |          |\n", floorMarker, f, hUp, hDn, cab)
 		}
 	}
 	fmt.Printf("  +----+-----+---+----------+\n")
-	fmt.Printf("  Direction: %s\n", dirnToString(e.Dirn))
+	fmt.Printf("  Direction: %s\n", dirnToString(elevator.Direction))
 }
 
 // DirectionToString converts a MotorDirection to a string
