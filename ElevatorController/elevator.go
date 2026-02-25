@@ -15,6 +15,8 @@ const (
 // ElevatorBehaviour represents the elevator's current FSM state
 type ElevatorBehaviour int
 
+
+
 const (
 	EB_Idle ElevatorBehaviour = iota
 	EB_DoorOpen
@@ -40,13 +42,20 @@ type Config struct {
 	DoorOpenDuration time.Duration
 }
 
+//floor direction pair for hall requests
+const (
+	HallUp = iota
+	HallDown
+)
+
 // Elevator represents the state of a single elevator
 type Elevator struct {
 	Behaviour   ElevatorBehaviour
 	Floor       int
+	ObstructionActive bool
 	Direction   elevio.MotorDirection
 	CabRequests [NumFloors]bool
-
+	HallRequests [NumFloors][2]bool 
 	Config Config
 }
 

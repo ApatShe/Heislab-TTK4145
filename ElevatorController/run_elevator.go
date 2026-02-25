@@ -31,7 +31,7 @@ func RunElevator(
 	drv_obstr <-chan bool,
 	drv_stop <-chan bool,
 	ButtonChan chan<- elevio.ButtonEvent,
-	hallRequestChan <-chan [NumFloors]HallRequestDirectionPair,
+	hallRequestChan <-chan [NumFloors][2]bool,
 ) {
 	elevator := ElevatorUninitialized()
 	timer := NewDoorTimer()
@@ -39,8 +39,8 @@ func RunElevator(
 	if elevio.GetFloor() == -1 {
 		FsmOnInitBetweenFloors(elevator)
 	} else {
-		elevator.ElevatorState.Floor = elevio.GetFloor()
-		elevio.SetFloorIndicator(elevator.ElevatorState.Floor)
+		elevator.Floor = elevio.GetFloor()
+		elevio.SetFloorIndicator(elevator.Floor)
 	}
 
 	fmt.Println("Elevator controller started!")
@@ -64,26 +64,24 @@ func RunElevator(
 			//TODO: might be inaccurate and not communicate well with the Network module
 		case newHallRequests := <-hallRequestChan:
 			fmt.Printf("DEBUG: Received hall requests from Manager\n")
-			hasNew := elevator.ReplaceHallRequests(newHallRequests)
+			hasNew := ReplaceHallRequests(newHallRequests) //TODO
 			setAllLights(elevator)
 
-			if elevator.ElevatorState.Behavior == EB_Idle && hasNew {
+			if elevator.Behaviour == EB_Idle && hasNew {
 				fmt.Printf("DEBUG: Idle with new requests, choosing direction\n")
-				behaviourPair := elevator.ChooseDirection()
-				elevator.ElevatorState.Direction = behaviourPair.Direction
-				elevator.ElevatorState.Behavior = behaviourPair.Behaviour
-				fmt.Printf("DEBUG: Chose Dirn=%s, Behaviour=%s\n", dirnToString(elevator.ElevatorState.Direction), elevator.ElevatorState.Behavior.String())
+				elevator.Direction, elevator.Behaviour = RequestsChooseDirection()
+				fmt.Printf("DEBUG: Chose Dirn=%s, Behaviour=%s\n", dirnToString(elevator.Direction), elevator.Behaviour.String())
 
-				switch behaviourPair.Behaviour {
+				switch elevator.Behaviour {
 				case EB_DoorOpen:
 					fmt.Printf("DEBUG: Opening doors at current floor\n")
 					elevio.SetDoorOpenLamp(true)
 					timer.Start(elevator.Config.DoorOpenDuration)
-					elevator.ClearRequestsAtCurrentFloor()
+					RequestsClearAtCurrentFloor(elevator)
 					setAllLights(elevator)
 				case EB_Moving:
 					fmt.Printf("DEBUG: Starting movement for hall requests\n")
-					elevio.SetMotorDirection(elevator.ElevatorState.Direction)
+					elevio.SetMotorDirection(elevator.Direction)
 				case EB_Idle:
 					fmt.Printf("DEBUG: Staying idle\n")
 				}
@@ -94,7 +92,7 @@ func RunElevator(
 		case obstr := <-drv_obstr:
 			fmt.Printf("Obstruction: %v\n", obstr)
 			elevator.ObstructionActive = obstr
-			if !obstr && elevator.ElevatorState.Behavior == EB_DoorOpen {
+			if !obstr && elevator.Behaviour == EB_DoorOpen {
 				timer.Start(elevator.Config.DoorOpenDuration)
 			}
 
@@ -109,20 +107,20 @@ func RunElevator(
 				elevio.SetMotorDirection(elevio.MD_Stop)
 
 				// 3. Clear all requests (Emergency Reset)
-				elevator.ClearAllCabRequests()
+				ClearAllCabRequests(elevator)
 				// Hall requests typically cleared too or re-assigned
 				setAllLights(elevator)
 
 				// 4. Handle Door if at floor
-				if elevator.ElevatorState.Behavior == EB_Moving {
-					elevator.ElevatorState.Direction = elevio.MD_Stop
-					elevator.ElevatorState.Behavior = EB_Idle
+				if elevator.Behaviour == EB_Moving {
+					elevator.Direction = elevio.MD_Stop
+					elevator.Behaviour = EB_Idle
 					// If between floors, we just stop and wait.
-				} else if elevator.ElevatorState.Behavior == EB_Idle || elevator.ElevatorState.Behavior == EB_DoorOpen {
+				} else if elevator.Behaviour == EB_Idle || elevator.Behaviour == EB_DoorOpen {
 					// If at floor, force doors open
 					elevio.SetDoorOpenLamp(true)
 					timer.Start(elevator.Config.DoorOpenDuration)
-					elevator.ElevatorState.Behavior = EB_DoorOpen
+					elevator.Behaviour = EB_DoorOpen
 				}
 
 				//TODO: let this be running a bash script that exits the program and terminates the sim mby?

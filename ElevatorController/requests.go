@@ -1,12 +1,39 @@
 package elevatorcontroller
 
-import "Heislab/driver-go/elevio"
+import (
+	"Heislab/driver-go/elevio"
+	"fmt"
+)
+
+func ClearAllCabRequests(elevator *Elevator) {
+	for f := 0; f < NumFloors; f++ {
+		elevator.CabRequests[f] = false
+	}
+}
+
+// TODO: clearHall requests, typically cleared too or re-assigned
+
+/* not in use
+func hasNewRequests(old, new_ [NumFloors][2]bool) bool {
+	for f := 0; f < NumFloors; f++ {
+		if (new_[f][0] && !old[f][0]) || (new_[f][1] && !old[f][1]) {
+			return true
+		}
+	}
+	return false
+}
+*/
+//TODO: eplaceHallRequests, ClearRequestsAtCurrentFloor,
+func ReplaceHallRequests(newHallRequests [4][2]bool) bool {
+	fmt.Println("Replacing hall request has not been implemented", newHallRequests)
+	return false
+}
 
 // RequestsAbove checks if there are any requests (cab or hall) above the current floor
-func RequestsAbove(e *Elevator) bool {
+func CheckRequestsAbove(e *Elevator) bool {
 	for f := e.Floor + 1; f < NumFloors; f++ {
 		// Check: HallUp || HallDown || Cab
-		if e.HallRequests[f][0] || e.HallRequests[f][1] || e.CabRequests[f] {
+		if e.HallRequests[f][HallUp] || e.HallRequests[f][HallDown] || e.CabRequests[f] {
 			return true
 		}
 	}
@@ -14,7 +41,7 @@ func RequestsAbove(e *Elevator) bool {
 }
 
 // RequestsBelow checks if there are any requests (cab or hall) below the current floor
-func RequestsBelow(e *Elevator) bool {
+func CheckRequestsBelow(e *Elevator) bool {
 	for f := 0; f < e.Floor; f++ {
 		// Check: HallUp || HallDown || Cab
 		if e.HallRequests[f][0] || e.HallRequests[f][1] || e.CabRequests[f] {
@@ -25,8 +52,8 @@ func RequestsBelow(e *Elevator) bool {
 }
 
 // RequestsHere checks if there are requests at the current floor that match the current direction
-func RequestsHere(e *Elevator) bool {
-	switch e.Dirn {
+func CheckIfRequestsAtCurrentFloor(e *Elevator) bool {
+	switch e.Direction {
 	case elevio.MD_Up:
 		// Going up: check HallUp or Cab
 		return e.HallRequests[e.Floor][0] || e.CabRequests[e.Floor]
@@ -46,7 +73,7 @@ func RequestsHere(e *Elevator) bool {
 // RequestsShouldStop determines if the elevator should stop at the current floor
 // This implements the classic elevator collective behavior algorithm
 func RequestsShouldStop(e *Elevator) bool {
-	switch e.Dirn {
+	switch e.Direction {
 	case elevio.MD_Down:
 		// Stop if:
 		// 1. HallDown request (matches our direction)
@@ -54,7 +81,7 @@ func RequestsShouldStop(e *Elevator) bool {
 		// 3. HallUp request AND no requests below (might as well pick them up)
 		return e.HallRequests[e.Floor][1] ||
 			e.CabRequests[e.Floor] ||
-			(e.HallRequests[e.Floor][0] && !RequestsBelow(e))
+			(e.HallRequests[e.Floor][0] && !CheckRequestsBelow(e))
 
 	case elevio.MD_Up:
 		// Stop if:
@@ -63,7 +90,7 @@ func RequestsShouldStop(e *Elevator) bool {
 		// 3. HallDown request AND no requests above (might as well pick them up)
 		return e.HallRequests[e.Floor][0] ||
 			e.CabRequests[e.Floor] ||
-			(e.HallRequests[e.Floor][1] && !RequestsAbove(e))
+			(e.HallRequests[e.Floor][1] && !CheckRequestsAbove(e))
 
 	case elevio.MD_Stop:
 		fallthrough
@@ -92,7 +119,7 @@ func RequestsClearAtCurrentFloor(e *Elevator) {
 
 	// Clear hall requests based on direction and remaining requests
 
-	switch e.Dirn {
+	switch e.Direction {
 	case elevio.MD_Up:
 		// Clear HallUp (our direction)
 		e.HallRequests[e.Floor][0] = false
@@ -100,7 +127,7 @@ func RequestsClearAtCurrentFloor(e *Elevator) {
 
 		// Also clear HallDown if no more requests above
 		// (we're about to turn around or stop anyway)
-		if !RequestsAbove(e) {
+		if !CheckRequestsAbove(e) {
 			e.HallRequests[e.Floor][1] = false
 			elevio.SetButtonLamp(elevio.BT_HallDown, e.Floor, false)
 		}
@@ -111,7 +138,7 @@ func RequestsClearAtCurrentFloor(e *Elevator) {
 		elevio.SetButtonLamp(elevio.BT_HallDown, e.Floor, false)
 
 		// Also clear HallUp if no more requests below
-		if !RequestsBelow(e) {
+		if !CheckRequestsBelow(e) {
 			e.HallRequests[e.Floor][0] = false
 			elevio.SetButtonLamp(elevio.BT_HallUp, e.Floor, false)
 		}
@@ -129,13 +156,13 @@ func RequestsClearAtCurrentFloor(e *Elevator) {
 // RequestsChooseDirection determines the next direction and behavior based on current requests
 // This is the core elevator movement decision algorithm
 func RequestsChooseDirection(e *Elevator) DirnBehaviourPair {
-	switch e.Dirn {
+	switch e.Direction {
 	case elevio.MD_Up:
 		// Currently going up
-		if RequestsAbove(e) {
+		if CheckRequestsAbove(e) {
 			// Continue going up
 			return DirnBehaviourPair{elevio.MD_Up, EB_Moving}
-		} else if RequestsBelow(e) {
+		} else if CheckRequestsBelow(e) {
 			// Turn around and go down
 			return DirnBehaviourPair{elevio.MD_Down, EB_Moving}
 		} else {
@@ -145,10 +172,10 @@ func RequestsChooseDirection(e *Elevator) DirnBehaviourPair {
 
 	case elevio.MD_Down:
 		// Currently going down
-		if RequestsBelow(e) {
+		if CheckRequestsBelow(e) {
 			// Continue going down
 			return DirnBehaviourPair{elevio.MD_Down, EB_Moving}
-		} else if RequestsAbove(e) {
+		} else if CheckRequestsAbove(e) {
 			// Turn around and go up
 			return DirnBehaviourPair{elevio.MD_Up, EB_Moving}
 		} else {
@@ -161,13 +188,13 @@ func RequestsChooseDirection(e *Elevator) DirnBehaviourPair {
 
 	default:
 		// Currently stopped/idle
-		if RequestsHere(e) {
+		if CheckIfRequestsAtCurrentFloor(e) {
 			// Request at current floor, open doors
 			return DirnBehaviourPair{elevio.MD_Stop, EB_DoorOpen}
-		} else if RequestsAbove(e) {
+		} else if CheckRequestsAbove(e) {
 			// Requests above, start going up
 			return DirnBehaviourPair{elevio.MD_Up, EB_Moving}
-		} else if RequestsBelow(e) {
+		} else if CheckRequestsBelow(e) {
 			// Requests below, start going down
 			return DirnBehaviourPair{elevio.MD_Down, EB_Moving}
 		} else {

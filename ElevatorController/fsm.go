@@ -5,20 +5,6 @@ import (
 	"fmt"
 )
 
-// setAllLights synchronises all button lamps with the current request state.
-func setAllLights(e *Elevator) {
-	// Set cab button lamps
-	for f := 0; f < NumFloors; f++ {
-		elevio.SetButtonLamp(elevio.BT_Cab, f, e.CabRequests[f])
-	}
-
-	// Set hall button lamps
-	for f := 0; f < NumFloors; f++ {
-		elevio.SetButtonLamp(elevio.BT_HallUp, f, e.HallRequests[f][0])
-		elevio.SetButtonLamp(elevio.BT_HallDown, f, e.HallRequests[f][1])
-	}
-}
-
 // FsmOnInitBetweenFloors handles the case where the elevator starts
 // between floors: it drives downward until reaching a known floor.
 func FsmOnInitBetweenFloors(e *Elevator) {
@@ -26,7 +12,7 @@ func FsmOnInitBetweenFloors(e *Elevator) {
 	ElevatorPrint(e)
 
 	elevio.SetMotorDirection(elevio.MD_Down)
-	e.Dirn = elevio.MD_Down
+	e.Direction = elevio.MD_Down
 	e.Behaviour = EB_Moving
 	fmt.Printf("DEBUG: Set motor to Down, Behaviour to Moving\n")
 
@@ -64,9 +50,9 @@ func FsmOnRequestButtonPress(e *Elevator, btnFloor int, btnType elevio.ButtonTyp
 			fmt.Printf("DEBUG: Idle, adding cab request at floor %d\n", btnFloor)
 			e.CabRequests[btnFloor] = true
 			pair := RequestsChooseDirection(e)
-			e.Dirn = pair.Dirn
+			e.Direction = pair.Direction
 			e.Behaviour = pair.Behaviour
-			fmt.Printf("DEBUG: Chose Dirn=%s, Behaviour=%s\n", dirnToString(e.Dirn), e.Behaviour.String())
+			fmt.Printf("DEBUG: Chose Direction=%s, Behaviour=%s\n", DirectionToString(e.Direction), e.Behaviour.String())
 
 			switch pair.Behaviour {
 			case EB_DoorOpen:
@@ -77,7 +63,7 @@ func FsmOnRequestButtonPress(e *Elevator, btnFloor int, btnType elevio.ButtonTyp
 
 			case EB_Moving:
 				fmt.Printf("DEBUG: Starting movement\n")
-				elevio.SetMotorDirection(e.Dirn)
+				elevio.SetMotorDirection(e.Direction)
 
 			case EB_Idle:
 				fmt.Printf("DEBUG: Staying idle\n")
@@ -154,9 +140,9 @@ func FsmOnDoorTimeout(e *Elevator, timer *DoorTimer) {
 	case EB_DoorOpen:
 		fmt.Printf("DEBUG: Doors were open, choosing next action\n")
 		pair := RequestsChooseDirection(e)
-		e.Dirn = pair.Dirn
+		e.Direction = pair.Direction
 		e.Behaviour = pair.Behaviour
-		fmt.Printf("DEBUG: Chose Dirn=%s, Behaviour=%s\n", dirnToString(e.Dirn), e.Behaviour.String())
+		fmt.Printf("DEBUG: Chose Direction=%s, Behaviour=%s\n", DirectionToString(e.Direction), e.Behaviour.String())
 
 		switch pair.Behaviour {
 		case EB_DoorOpen:
@@ -167,9 +153,8 @@ func FsmOnDoorTimeout(e *Elevator, timer *DoorTimer) {
 		case EB_Moving:
 			fmt.Printf("DEBUG: Closing doors and starting movement\n")
 			elevio.SetDoorOpenLamp(false)
-			elevio.SetMotorDirection(e.Dirn)
-			fmt.Printf("DEBUG: FSM Starting movement dir=%v\n", e.Dirn)
-		
+			elevio.SetMotorDirection(e.Direction)
+			fmt.Printf("DEBUG: FSM Starting movement dir=%v\n", e.Direction)
 
 		case EB_Idle:
 			fmt.Printf("DEBUG: Closing doors and becoming idle\n")

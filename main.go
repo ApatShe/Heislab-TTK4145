@@ -3,10 +3,11 @@ package main
 import (
 	"flag"
 	"fmt"
-	"strconv"
 	"time"
 
+	elevatorcontroller "Heislab/ElevatorController"
 	network "Heislab/Network"
+	networkdriver "Heislab/NetworkDriver"
 	"Heislab/driver-go/elevio"
 	"Heislab/timer"
 )
@@ -65,9 +66,9 @@ func main() {
 	flag.Parse()
 
 	// // ---- Initialize elevator ----
-	elevio.Init("localhost:"+strconv.Itoa(port), elevatorcontroller.NumFloors)
-	elevatorcontroller.InitFsm()
-	initElevator, doorOpenDuration := elevatorcontroller.InitBetweenFloors()
+	//elevio.Init("localhost:"+strconv.Itoa(port), elevatorcontroller.NumFloors)
+	//elevatorcontroller.InitFsm()
+	//initElevator, doorOpenDuration := elevatorcontroller.InitBetweenFloors()
 
 	// ---- Initialize hardware communication ----
 	buttonEventChan := make(chan elevio.ButtonEvent, 1)
@@ -121,7 +122,7 @@ func main() {
 		elevatorStateChan,
 		orderChan,
 		peerStateChan,
-		disconnectChan,
+		//disconnectChan,
 		initElevator,
 		id,
 	)
