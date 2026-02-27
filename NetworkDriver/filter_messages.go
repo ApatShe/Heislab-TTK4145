@@ -64,19 +64,68 @@ func mergeCabRequests(local, received []RequestState, localID, receivedID string
 
 // mergeHallRequests merges a received hall request matrix into the local one.
 // Hall requests are shared across all nodes on the network.
-func mergeHallRequests(local, received [][2]RequestState) [][2]RequestState {
-	mergedHallRequests := make([][2]RequestState, len(local))
-	for floor := range local {
-		for btn := range local[floor] {
-			mergedHallRequests[floor][btn] = returnValidState(local[floor][btn], received[floor][btn])
+// copyHallRequests shallow-copies a per-peer hall request map.
+func copyHallRequests(src map[string][][2]RequestState) map[string][][2]RequestState {
+	dst := make(map[string][][2]RequestState, len(src))
+	for nodeID, reqs := range src {
+		dst[nodeID] = reqs
+	}
+	return dst
+}
+
+// mergePeerEntry applies the cyclic counter to a single peer's floor/button matrix.
+func mergePeerEntry(local, received [][2]RequestState) [][2]RequestState {
+	merged := make([][2]RequestState, len(received))
+	for floor := range received {
+		for btn := range received[floor] {
+			var localState RequestState
+			if local != nil {
+				localState = local[floor][btn]
+			}
+			merged[floor][btn] = returnValidState(localState, received[floor][btn])
 		}
 	}
-	return mergedHallRequests
+	return merged
+}
+
+// mergeHallRequests merges only the received node's own entry into the local map.
+func mergeHallRequests(local, received map[string][][2]RequestState, receivedID string) map[string][][2]RequestState {
+	merged := copyHallRequests(local)
+	merged[receivedID] = mergePeerEntry(local[receivedID], received[receivedID])
+	return merged
+}
+
+func copyElevators(src map[string]ElevatorState) map[string]ElevatorState {
+	dst := make(map[string]ElevatorState, len(src))
+	for nodeID, state := range src {
+		dst[nodeID] = state
+	}
+	return dst
+}
+
+func mergePeerElevator(local, received NetworkSnapshot) ElevatorState {
+	return ElevatorState{
+		Behaviour: received.Elevators[received.NodeID].Behaviour,
+		Floor:     received.Elevators[received.NodeID].Floor,
+		Direction: received.Elevators[received.NodeID].Direction,
+		CabRequests: mergeCabRequests(
+			local.Elevators[local.NodeID].CabRequests,
+			received.Elevators[received.NodeID].CabRequests,
+			local.NodeID,
+			received.NodeID,
+		),
+	}
+}
+
+func mergeElevators(local, received NetworkSnapshot) map[string]ElevatorState {
+	merged := copyElevators(local.Elevators)
+	merged[received.NodeID] = mergePeerElevator(local, received)
+	return merged
 }
 
 func FilteredMessage(local, received NetworkSnapshot) NetworkSnapshot {
 	merged := local
-	merged.CabRequests = mergeCabRequests(local.CabRequests, received.CabRequests, local.NodeID, received.NodeID)
-	merged.HallRequests = mergeHallRequests(local.HallRequests, received.HallRequests)
+	merged.Elevators = mergeElevators(local, received)
+	merged.HallRequests = mergeHallRequests(local.HallRequests, received.HallRequests, received.NodeID)
 	return merged
 }

@@ -1,4 +1,4 @@
-package hraexample
+package manager
 
 import (
 	"encoding/json"
@@ -11,7 +11,7 @@ import (
 // This means they must start with a capital letter, so we need to use field renaming struct tags to make them camelCase
 
 type HRAElevState struct {
-	Behavior    string `json:"behaviour"`
+	Behaviour   string `json:"behaviour"`
 	Floor       int    `json:"floor"`
 	Direction   string `json:"direction"`
 	CabRequests []bool `json:"cabRequests"`
@@ -22,9 +22,11 @@ type HRAInput struct {
 	States       map[string]HRAElevState `json:"states"`
 }
 
-func HRAExample() {
-	fmt.Println("HRAEXAMPLE IS DOING SHIT")
+func OutputHallRequesstAssigner(input HRAInput) map[string][][2]bool {
+	fmt.Println("HRA-received input:", input)
+
 	hraExecutable := ""
+
 	switch runtime.GOOS {
 	case "linux":
 		hraExecutable = "hall_request_assigner"
@@ -34,46 +36,29 @@ func HRAExample() {
 		panic("OS not supported")
 	}
 
-	input := HRAInput{
-		HallRequests: [][2]bool{{false, false}, {true, false}, {false, false}, {false, true}},
-		States: map[string]HRAElevState{
-			"one": HRAElevState{
-				Behavior:    "moving",
-				Floor:       2,
-				Direction:   "up",
-				CabRequests: []bool{false, false, false, true},
-			},
-			"two": HRAElevState{
-				Behavior:    "idle",
-				Floor:       0,
-				Direction:   "stop",
-				CabRequests: []bool{false, false, false, false},
-			},
-		},
-	}
-
 	jsonBytes, err := json.Marshal(input)
 	if err != nil {
 		fmt.Println("json.Marshal error: ", err)
-		return
+		return nil
 	}
 
 	ret, err := exec.Command("./hall_request_assigner/"+hraExecutable, "-i", string(jsonBytes)).CombinedOutput()
 	if err != nil {
 		fmt.Println("exec.Command error: ", err)
 		fmt.Println(string(ret))
-		return
+		return nil
 	}
 
 	output := new(map[string][][2]bool)
 	err = json.Unmarshal(ret, &output)
 	if err != nil {
 		fmt.Println("json.Unmarshal error: ", err)
-		return
+		return nil
 	}
 
 	fmt.Printf("output: \n")
 	for k, v := range *output {
 		fmt.Printf("%6v :  %+v\n", k, v)
 	}
+	return *output
 }

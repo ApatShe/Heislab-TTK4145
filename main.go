@@ -1,14 +1,15 @@
 package main
 
 import (
+	elevatorcontroller "Heislab/ElevatorController"
+	"Heislab/Network/network/localip"
+	networkdriver "Heislab/NetworkDriver"
+	"Heislab/driver-go/elevio"
+	"Heislab/timer"
 	"flag"
 	"fmt"
 	"strconv"
 	"time"
-
-	network "Heislab/Network"
-	"Heislab/driver-go/elevio"
-	"Heislab/timer"
 )
 
 const (
@@ -51,22 +52,34 @@ const (
 // But in general packet loss will ravage our elevator system
 // :DD
 func main() {
-	network.NetworkExample()
 
 	//select {}
+	const (
+		defaultElevatorPort = 15657
+		obstructionTimeout  = time.Second * 10
+		motorTimeout        = time.Second * 10
+	)
 
 	// ---- Flags ----
 	var port int
 	var id string
-	flag.IntVar(&port, "port", defaultElevatorPort, "Elevator server port")
-	flag.StringVar(&id, "id", "", "Network node id")
-	fmt.Println("Started!")
+
+	//-----Set machine specific id ----
+	id, err := localip.LocalIP()
+	if err != nil {
+		panic(fmt.Sprintf("could not resolve local IP: %v", err))
+	}
+
+	fmt.Printf("Starting node with id: %s\n", id)
+	//flag.IntVar(&port, "port", defaultElevatorPort, "Elevator server port")
+	//flag.StringVar(&id, "id", "", "Network node id")
+	//fmt.Println("Started!")
 
 	flag.Parse()
 
 	// // ---- Initialize elevator ----
 	elevio.Init("localhost:"+strconv.Itoa(port), elevatorcontroller.NumFloors)
-	elevatorcontroller.InitFsm()
+	//elevatorcontroller.InitFsm()
 	initElevator, doorOpenDuration := elevatorcontroller.InitBetweenFloors()
 
 	// ---- Initialize hardware communication ----
@@ -103,7 +116,7 @@ func main() {
 	// TODO: Try unbuffering some of these channels and see what happens
 	orderChan := make(chan elevio.ButtonEvent, 1)
 	elevatorStateChan := make(chan elevatorcontroller.Elevator, 1)
-	peerStateChan := make(chan []elevatorcontroller.Elevator, 1)
+	peerStateChan := make(chan []networkdriver.NetworkSnapshot, 1)
 
 	// ---- Door communication ----
 	doorRequestChan := make(chan int)
@@ -111,6 +124,26 @@ func main() {
 
 	// ---- Lights communication
 	lightsElevatorStateChan := make(chan elevatorcontroller.Elevator, 1)
+
+	// ---- Manager communication ----
+
+	// ---- ELevator communication ----
+	motorChan := make(chan elevio.MotorDirection, 1)
+	doorLampChan := make(chan bool, 1)
+	cabLampChan := make(chan elevio.ButtonEvent, 1)
+	floorLampChan := make(chan int, 1)
+	hallButtonChan := make(chan elevio.ButtonEvent, 1)
+
+	out := elevatorcontroller.ElevatorOutputChans{
+		MotorChan:      motorChan,
+		DoorLampChan:   doorLampChan,
+		CabLampChan:    cabLampChan,
+		FloorLampChan:  floorLampChan,
+		HallButtonChan: hallButtonChan,
+		StateChan:      elevatorStateChan,
+	}
+
+	go elevatorcontroller.RunElevator(drv_buttons, drv_floors, drv_obstr, drv_stop, hallRequestChan, out)
 
 	// ---- Disconnect ----
 	disconnectChan := make(chan int, 1)
@@ -127,10 +160,11 @@ func main() {
 	)
 
 	go networkdriver.RunManager(
-		networkSnapshotChan,  // ← consumes snapshot
-		managerElevStateChan, // ← consumes local elevator state
+		peerStateChan,     // ← consumes snapshot
+		elevatorStateChan, // ← consumes local elevator state
 		orderChan,
 		peerStateChan, // ← fans out to lights
+		disconnectChan,
 	)
 
 	go elevatorcontroller.RunElevator(

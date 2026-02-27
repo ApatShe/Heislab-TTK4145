@@ -1,7 +1,7 @@
 package driver
 
 import (
-	elevatorcontroller "Heislab/ElevatorController"
+    "Heislab/ElevatorController"
 	types "Heislab/Types"
 	"Heislab/driver-go/elevio"
 )
@@ -24,7 +24,7 @@ import (
 //   - hallButtonChan:  hall button presses for the Manager
 //   - hallRequestChan: assigned hall requests into the elevator
 //   - packetChan:      ready-to-broadcast NetworkPackets for network.BroadcastElevatorState
-func StartElevator(addr string, numFloors int, localID string) (
+func InitializeElevator(addr string, numFloors int, localID string) (
 	hallButtonChan <-chan elevio.ButtonEvent,
 	hallRequestChan chan<- [elevatorcontroller.NumFloors]elevatorcontroller.HallRequestDirectionPair,
 	packetChan <-chan types.NetworkPacket,

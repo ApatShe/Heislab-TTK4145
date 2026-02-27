@@ -25,13 +25,24 @@ import (
 //   - stateChan: outbound state snapshots for the network transmitter.
 //     Sends are non-blocking; if the transmitter is not ready the snapshot
 //     is dropped rather than stalling the FSM.
+
+type ElevatorOutputChans struct {
+	MotorChan      chan<- elevio.MotorDirection
+	DoorLampChan   chan<- bool
+	CabLampChan    chan<- elevio.ButtonEvent
+	FloorLampChan  chan<- int
+	HallButtonChan chan<- elevio.ButtonEvent
+	StateChan      chan<- Elevator
+}
+
 func RunElevator(
 	drv_buttons <-chan elevio.ButtonEvent,
 	drv_floors <-chan int,
 	drv_obstr <-chan bool,
 	drv_stop <-chan bool,
 	ButtonChan chan<- elevio.ButtonEvent,
-	hallRequestChan <-chan [NumFloors]HallRequestDirectionPair,
+	hallRequestChan <-chan [][2]bool,
+	out ElevatorOutputChans,
 ) {
 	elevator := ElevatorUninitialized()
 	timer := NewDoorTimer()

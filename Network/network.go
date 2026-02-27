@@ -1,5 +1,6 @@
 package network
 
+/*
 import (
 	"Heislab/Network/network/bcast"
 	"Heislab/Network/network/localip"
@@ -46,19 +47,7 @@ func NetworkExample() {
 	go bcast.Receiver(16569, stateRx)
 
 	go func() {
-		msg := ElevatorSnapshotMsg{
-			ID:          id,
-			Behaviour:   "idle",
-			Floor:       1,
-			Direction:   "stop",
-			CabRequests: []networkdriver.RequestState{networkdriver.INACTIVE, networkdriver.INACTIVE, networkdriver.INACTIVE, networkdriver.INACTIVE},
-			HallRequests: [][2]networkdriver.RequestState{
-				{networkdriver.INACTIVE, networkdriver.INACTIVE},
-				{networkdriver.INACTIVE, networkdriver.INACTIVE},
-				{networkdriver.INACTIVE, networkdriver.INACTIVE},
-			},
-			Iter: 0,
-		}
+			msg := FilteredMessage()
 		for {
 			msg.Iter++
 			stateTx <- msg
@@ -96,3 +85,4 @@ func NetworkExample() {
 		}
 	}
 }
+*/

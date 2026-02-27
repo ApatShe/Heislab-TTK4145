@@ -6,36 +6,50 @@ import (
 	"Heislab/Network/network/peers"
 	"Heislab/driver-go/elevio"
 	"fmt"
+	"time"
 )
 
-// Runs a networking node. Distributes & acknowledges messages while maintaining a list
-// of peers on the network
+const (
+	peerUpdateBroadcastPort = 36251
+	snaphotBroadCastPort    = 12345
+)
+
 func RunNetworkNode(
-	buttonEventChan <-chan elevio.ButtonEvent,
 	elevatorStateChan <-chan elevatorcontroller.Elevator,
 	orderChan chan<- elevio.ButtonEvent,
-	peerStates chan<- []elevatorcontroller.Elevator,
-
+	snapshotChan chan<- NetworkSnapshot,
 	initState elevatorcontroller.Elevator,
 	id string,
 ) {
-	//nodeInstance := newNode(initState)
-	nodeID = id
-	uptime = 0
+	currentSnapshot := newNetworkSnapshot(initState, id)
+	knownStates := make(map[string]NetworkSnapshot)
+	iter := uint64(0)
 
-	// Internal channels — not to be confused with the peer update channels below
 	peerUpdateCh := make(chan peers.PeerUpdate)
 	peerTxEnable := make(chan bool)
-	stateTx := make(chan NetworkSnapshot)
-	stateRx := make(chan NetworkSnapshot)
+	snapshotTx := make(chan NetworkSnapshot)
+	snapshotRx := make(chan NetworkSnapshot)
 
-	go peers.Transmitter(port, id, peerTxEnable)
-	go peers.Receiver(port, peerUpdateCh)
-	go bcast.Transmitter(stateBroadcastPort, stateTx)
-	go bcast.Receiver(stateBroadcastPort, stateRx)
+	go peers.Transmitter(peerUpdateBroadcastPort, id, peerTxEnable)
+	go peers.Receiver(peerUpdateBroadcastPort, peerUpdateCh)
+
+	go bcast.Transmitter(snaphotBroadCastPort, snapshotTx)
+	go bcast.Receiver(snaphotBroadCastPort, snapshotRx)
+
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
 
 	for {
 		select {
+
+		case <-ticker.C:
+			iter++
+			currentSnapshot.Iter = iter
+			snapshotTx <- currentSnapshot
+
+		case state := <-elevatorStateChan:
+			currentSnapshot.Elevators[id] = LocalElevatorToElevatorState(state)
+			// No tx here — ticker handles broadcasting
 
 		case peer := <-peerUpdateCh:
 			fmt.Printf("Peer update:\n")
@@ -46,18 +60,35 @@ func RunNetworkNode(
 				delete(knownStates, lost)
 			}
 
-		case state := <-stateRx:
+		case receivedSnapshot := <-snapshotRx:
 			fmt.Printf("Received snapshot:\n")
-			fmt.Printf("  ID:           %s\n", state.NodeID)
-			fmt.Printf("  Behaviour:    %s\n", state.Elevators[state.NodeID].Behaviour)
-			fmt.Printf("  Floor:        %d\n", state.Elevators[state.NodeID].Floor)
-			fmt.Printf("  Direction:    %s\n", state.Elevators[state.NodeID].Direction)
-			fmt.Printf("  CabRequests:  %v\n", state.Elevators[state.NodeID].CabRequests)
-			fmt.Printf("  HallRequests: %v\n", state.HallRequests)
+			fmt.Printf("  ID:           %s\n", receivedSnapshot.NodeID)
+			fmt.Printf("  Behaviour:    %s\n", receivedSnapshot.Elevators[receivedSnapshot.NodeID].Behaviour)
+			fmt.Printf("  Floor:        %d\n", receivedSnapshot.Elevators[receivedSnapshot.NodeID].Floor)
+			fmt.Printf("  Direction:    %s\n", receivedSnapshot.Elevators[receivedSnapshot.NodeID].Direction)
+			fmt.Printf("  CabRequests:  %v\n", receivedSnapshot.Elevators[receivedSnapshot.NodeID].CabRequests)
+			fmt.Printf("  HallRequests: %v\n", receivedSnapshot.HallRequests)
+			fmt.Printf("Received snapshot from %s (iter %d)\n", receivedSnapshot.NodeID, receivedSnapshot.Iter)
 
-			fmt.Printf("Received state from %s (iter %d)\n", state.NodeID, state.Iter)
-			fmt.Printf("Known states: %d peers\n", len(knownStates))
+			// Deduplicate — skip if we've already processed this iter from this peer
+			if last, seen := knownStates[receivedSnapshot.NodeID]; seen && receivedSnapshot.Iter <= last.Iter {
+				break
+			}
+			knownStates[receivedSnapshot.NodeID] = receivedSnapshot
+			currentSnapshot = FilteredMessage(currentSnapshot, receivedSnapshot)
 
+			snapshotChan <- currentSnapshot
 		}
+	}
+}
+
+func newNetworkSnapshot(initState elevatorcontroller.Elevator, id string) NetworkSnapshot {
+	return NetworkSnapshot{
+		NodeID:       id,
+		HallRequests: make(map[string][][2]RequestState, elevatorcontroller.NumFloors),
+		Elevators: map[string]ElevatorState{
+			id: LocalElevatorToElevatorState(initState),
+		},
+		Iter: 0,
 	}
 }
