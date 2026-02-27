@@ -12,6 +12,8 @@ type Button struct {
 	elevio.ButtonType
 }
 
+//TODO: func (behaviour ElevatorBehaviour) BehaviourString() string { ... }
+
 func (direction Direction) DirString() string {
 	switch direction.MotorDirection {
 	case elevio.MD_Up:
@@ -27,7 +29,7 @@ func (direction Direction) DirString() string {
 
 // ButtonToString converts a ButtonType to a string
 func (button Button) BtnString() string {
-	switch button {
+	switch button.ButtonType {
 	case elevio.BT_HallUp:
 		return "HallUp"
 	case elevio.BT_HallDown:
@@ -62,7 +64,7 @@ func ElevatorPrint(elevator *Elevator) {
 			cab = "C"
 		}
 		if f == elevator.Floor {
-			fmt.Printf("%s |%-4d| %s %s | %s |%-10s|\n", floorMarker, f, hUp, hDn, cab, elevator.Behaviour.String())
+			fmt.Printf("%s |%-4d| %s %s | %s |%-10s|\n", floorMarker, f, hUp, hDn, cab, elevator.Behaviour.BehaviourString())
 		} else {
 			fmt.Printf("%s |%-4d| %s %s | %s |          |\n", floorMarker, f, hUp, hDn, cab)
 		}
