@@ -63,6 +63,7 @@ func RunManager(
 	localHallRequests := make([][2]networkdriver.RequestState, elevatorcontroller.NumFloors)
 	for {
 		select {
+		//TODO: Change the channel to a ElevatorController
 		case button := <-orderChan:
 			fmt.Printf("Manager Intercepted order: Floor=%d, Type=%v\n", button.Floor, button.Button)
 			localHallRequests[button.Floor][int(button.Button)] = networkdriver.REQUESTED

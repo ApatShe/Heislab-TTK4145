@@ -5,183 +5,121 @@ import (
 	"fmt"
 )
 
-// setAllLights synchronises all button lamps with the current request state.
-func setAllLights(e *Elevator) {
-	// Set cab button lamps
-	for f := 0; f < NumFloors; f++ {
-		elevio.SetButtonLamp(elevio.BT_Cab, f, e.CabRequests[f])
+// FsmActOnBehaviourPair writes direction+behaviour into elevator and executes
+// the corresponding hardware action. Returns served hall requests for Manager.
+// Only caller of RequestsClearAtCurrentFloor.
+func FsmActOnBehaviourPair(elevator *Elevator, pair DirnBehaviourPair, timer *DoorTimer) []elevio.ButtonEvent {
+	elevator.Direction = pair.Direction
+	elevator.Behaviour = pair.Behaviour
+
+	switch pair.Behaviour {
+	case EB_DoorOpen:
+		elevio.SetDoorOpenLamp(true)
+		timer.Start(elevator.Config.DoorOpenDuration)
+		return RequestsClearAtCurrentFloor(elevator)
+
+	case EB_Moving:
+		elevio.SetMotorDirection(elevator.Direction)
+
+	case EB_Idle:
+		elevio.SetMotorDirection(elevio.MD_Stop)
 	}
 
-	// Set hall button lamps
-	for f := 0; f < NumFloors; f++ {
-		elevio.SetButtonLamp(elevio.BT_HallUp, f, e.HallRequests[f][0])
-		elevio.SetButtonLamp(elevio.BT_HallDown, f, e.HallRequests[f][1])
-	}
+	return nil
 }
 
-// FsmOnInitBetweenFloors handles the case where the elevator starts
-// between floors: it drives downward until reaching a known floor.
-func FsmOnInitBetweenFloors(e *Elevator) {
+func FsmOnInitBetweenFloors(elevator *Elevator) {
 	fmt.Printf("\n\nFsmOnInitBetweenFloors()\n")
-	ElevatorPrint(e)
+	ElevatorPrint(elevator)
 
 	elevio.SetMotorDirection(elevio.MD_Down)
-	e.Dirn = elevio.MD_Down
-	e.Behaviour = EB_Moving
-	fmt.Printf("DEBUG: Set motor to Down, Behaviour to Moving\n")
+	elevator.Direction = elevio.MD_Down
+	elevator.Behaviour = EB_Moving
 
 	fmt.Println("\nNew state:")
-	ElevatorPrint(e)
+	ElevatorPrint(elevator)
 }
 
-// FsmOnRequestButtonPress handles a new button press event.
-// CAB buttons are handled locally, HALL buttons should be sent to Network/Manager.
-func FsmOnRequestButtonPress(e *Elevator, btnFloor int, btnType elevio.ButtonType, timer *DoorTimer) {
-	fmt.Printf("\n\nFsmOnRequestButtonPress(%d, %s)\n", btnFloor, ButtonToString(btnType))
-	ElevatorPrint(e)
+// CabRequestButtonPress handles a cab button press.
+// Hall buttons never reach here — RunElevator routes them to orderChan.
+func CabRequestButtonPress(elevator *Elevator, btnFloor int, timer *DoorTimer) []elevio.ButtonEvent {
+	fmt.Printf("\n\nCabRequestButtonPress(%d)\n", btnFloor)
+	ElevatorPrint(elevator)
 
-	// Route button press to appropriate storage
-	switch btnType {
-	case elevio.BT_Cab:
-		fmt.Printf("DEBUG: Handling cab button\n")
-		// Handle cab button locally
-		switch e.Behaviour {
-		case EB_DoorOpen:
-			fmt.Printf("DEBUG: Doors open, checking if should clear immediately\n")
-			if RequestsShouldClearImmediately(e, btnFloor) {
-				fmt.Printf("DEBUG: Clearing immediately, restarting timer\n")
-				timer.Start(e.Config.DoorOpenDuration)
-			} else {
-				fmt.Printf("DEBUG: Adding cab request at floor %d\n", btnFloor)
-				e.CabRequests[btnFloor] = true
-			}
-
-		case EB_Moving:
-			fmt.Printf("DEBUG: Moving, adding cab request at floor %d\n", btnFloor)
-			e.CabRequests[btnFloor] = true
-
-		case EB_Idle:
-			fmt.Printf("DEBUG: Idle, adding cab request at floor %d\n", btnFloor)
-			e.CabRequests[btnFloor] = true
-			pair := RequestsChooseDirection(e)
-			e.Dirn = pair.Dirn
-			e.Behaviour = pair.Behaviour
-			fmt.Printf("DEBUG: Chose Dirn=%s, Behaviour=%s\n", dirnToString(e.Dirn), e.Behaviour.String())
-
-			switch pair.Behaviour {
-			case EB_DoorOpen:
-				fmt.Printf("DEBUG: Opening doors at current floor\n")
-				elevio.SetDoorOpenLamp(true)
-				timer.Start(e.Config.DoorOpenDuration)
-				RequestsClearAtCurrentFloor(e)
-
-			case EB_Moving:
-				fmt.Printf("DEBUG: Starting movement\n")
-				elevio.SetMotorDirection(e.Dirn)
-
-			case EB_Idle:
-				fmt.Printf("DEBUG: Staying idle\n")
-			}
+	switch elevator.Behaviour {
+	case EB_DoorOpen:
+		if CabRequestShouldClearImmediately(elevator, btnFloor) {
+			timer.Start(elevator.Config.DoorOpenDuration)
+		} else {
+			elevator.CabRequests[btnFloor] = true
 		}
 
-	case elevio.BT_HallUp, elevio.BT_HallDown:
-		fmt.Printf("DEBUG: Hall button - forwarding to Manager\n")
-		// Hall buttons should be sent to Network/Manager for distribution
-		// They will eventually come back via UpdateHallRequests()
-		return
+	case EB_Moving:
+		elevator.CabRequests[btnFloor] = true
+
+	case EB_Idle:
+		elevator.CabRequests[btnFloor] = true
+		return FsmActOnBehaviourPair(elevator, RequestsChooseDirection(elevator), timer)
 	}
 
-	setAllLights(e)
-
 	fmt.Println("\nNew state:")
-	ElevatorPrint(e)
+	ElevatorPrint(elevator)
+	return nil
 }
 
-// FsmOnFloorArrival handles the elevator arriving at a new floor.
-func FsmOnFloorArrival(e *Elevator, newFloor int, timer *DoorTimer) {
+func FsmOnFloorArrival(elevator *Elevator, newFloor int, timer *DoorTimer) []elevio.ButtonEvent {
 	fmt.Printf("\n\nFsmOnFloorArrival(%d)\n", newFloor)
-	ElevatorPrint(e)
+	ElevatorPrint(elevator)
 
-	e.Floor = newFloor
-	elevio.SetFloorIndicator(e.Floor)
-	fmt.Printf("DEBUG: Arrived at floor %d, set indicator\n", newFloor)
+	elevator.Floor = newFloor
 
-	switch e.Behaviour {
+	switch elevator.Behaviour {
 	case EB_Moving:
-		fmt.Printf("DEBUG: Was moving, checking if should stop\n")
-
-		shouldStop := RequestsShouldStop(e)
-
-		// Safety fix: If no requests anywhere, force stop (handles initialization case)
-		if !shouldStop && !RequestsAbove(e) && !RequestsBelow(e) && !RequestsHere(e) {
-			fmt.Printf("DEBUG: No requests anywhere (Init complete?), forcing stop\n")
+		if HasNoRequests(elevator) {
+			// Init just completed, no requests yet — just go idle
 			elevio.SetMotorDirection(elevio.MD_Stop)
-			e.Behaviour = EB_Idle
-			// Don't open doors or clear requests, just go idle
-		} else if shouldStop {
-			fmt.Printf("DEBUG: Should stop, stopping motor and opening doors\n")
+			elevator.Behaviour = EB_Idle
+
+		} else if RequestsShouldStop(elevator) {
 			elevio.SetMotorDirection(elevio.MD_Stop)
-			elevio.SetDoorOpenLamp(true)
-			timer.Start(e.Config.DoorOpenDuration)
-			e.Behaviour = EB_DoorOpen
-			RequestsClearAtCurrentFloor(e)
-		} else {
-			fmt.Printf("DEBUG: Should not stop, continuing\n")
+			served := FsmActOnBehaviourPair(elevator, DirnBehaviourPair{elevator.Direction, EB_DoorOpen}, timer)
+			fmt.Println("\nNew state:")
+			ElevatorPrint(elevator)
+			return served
 		}
+		// else: continue moving, no action
 
 	default:
 		fmt.Printf("DEBUG: Not moving, no action\n")
 	}
 
-	setAllLights(e)
-
 	fmt.Println("\nNew state:")
-	ElevatorPrint(e)
+	ElevatorPrint(elevator)
+	return nil
 }
 
-// FsmOnDoorTimeout handles the door-open timer expiring.
-func FsmOnDoorTimeout(e *Elevator, timer *DoorTimer) {
+func FsmOnDoorTimeout(elevator *Elevator, timer *DoorTimer) []elevio.ButtonEvent {
 	fmt.Printf("\n\nFsmOnDoorTimeout()\n")
-	ElevatorPrint(e)
+	ElevatorPrint(elevator)
 
-	if e.ObstructionActive {
-		fmt.Printf("DEBUG: Obstruction active, restarting timer\n")
-		timer.Start(e.Config.DoorOpenDuration)
-		return
+	if elevator.ObstructionActive {
+		timer.Start(elevator.Config.DoorOpenDuration)
+		return nil
 	}
 
-	switch e.Behaviour {
+	switch elevator.Behaviour {
 	case EB_DoorOpen:
-		fmt.Printf("DEBUG: Doors were open, choosing next action\n")
-		pair := RequestsChooseDirection(e)
-		e.Dirn = pair.Dirn
-		e.Behaviour = pair.Behaviour
-		fmt.Printf("DEBUG: Chose Dirn=%s, Behaviour=%s\n", dirnToString(e.Dirn), e.Behaviour.String())
+		elevio.SetDoorOpenLamp(false)
+		served := FsmActOnBehaviourPair(elevator, RequestsChooseDirection(elevator), timer)
+		fmt.Println("\nNew state:")
+		ElevatorPrint(elevator)
+		return served
 
-		switch pair.Behaviour {
-		case EB_DoorOpen:
-			fmt.Printf("DEBUG: Keeping doors open, restarting timer\n")
-			timer.Start(e.Config.DoorOpenDuration)
-			RequestsClearAtCurrentFloor(e)
-
-		case EB_Moving:
-			fmt.Printf("DEBUG: Closing doors and starting movement\n")
-			elevio.SetDoorOpenLamp(false)
-			elevio.SetMotorDirection(e.Dirn)
-			fmt.Printf("DEBUG: FSM Starting movement dir=%v\n", e.Dirn)
-		
-
-		case EB_Idle:
-			fmt.Printf("DEBUG: Closing doors and becoming idle\n")
-			elevio.SetDoorOpenLamp(false)
-			elevio.SetMotorDirection(elevio.MD_Stop)
-		}
 	default:
 		fmt.Printf("DEBUG: Doors not open, no action\n")
 	}
 
-	setAllLights(e)
-
 	fmt.Println("\nNew state:")
-	ElevatorPrint(e)
+	ElevatorPrint(elevator)
+	return nil
 }

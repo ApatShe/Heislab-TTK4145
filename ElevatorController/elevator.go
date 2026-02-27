@@ -6,13 +6,8 @@ import (
 	"time"
 )
 
-// Constants matching the C implementation
-const (
-	//TODO: change this to something configurable with the init bash file
-	NumFloors = 4
-)
+const NumFloors = 4
 
-// ElevatorBehaviour represents the elevator's current FSM state
 type ElevatorBehaviour int
 
 const (
@@ -34,55 +29,28 @@ func (eb ElevatorBehaviour) String() string {
 	}
 }
 
-type Direction struct {
-	elevio.MotorDirection
-}
-
-func (direction Direction) String() string {
-	switch direction.MotorDirection {
-	case elevio.MD_Up:
-		return "up"
-	case elevio.MD_Down:
-		return "down"
-	case elevio.MD_Stop:
-		return "stop"
-	default:
-		return "unknown"
-	}
-}
-
-// Config holds elevator configuration parameters
 type Config struct {
-	//TODO: a lot more to do here given the init bash file
 	DoorOpenDuration time.Duration
 }
 
-// Elevator represents the state of a single elevator
 type Elevator struct {
 	Behaviour    ElevatorBehaviour
 	Floor        int
-	Direction    Direction
+	Direction    elevio.MotorDirection
 	CabRequests  [NumFloors]bool
-	HallRequests [NumFloors][2]bool // [floor][0=up/1=down]
-
-	Config Config
+	HallRequests [NumFloors][2]bool // [floor][0=up, 1=down]
+	Config       Config
 }
 
-// ElevatorUninitialized returns a new elevator in the uninitialized state.
 func ElevatorUninitialized() *Elevator {
 	return &Elevator{
-		Floor:        -1,
-		Direction:    Direction{elevio.MD_Stop},
-		CabRequests:  [NumFloors]bool{},
-		HallRequests: [NumFloors][2]bool{},
-		Behaviour:    EB_Idle,
-		Config: Config{
-			DoorOpenDuration: 3 * time.Second,
-		},
+		Floor:     -1,
+		Direction: elevio.MD_Stop,
+		Behaviour: EB_Idle,
+		Config:    Config{DoorOpenDuration: 3 * time.Second},
 	}
 }
 
-// ElevatorPrint prints the current elevator state (for debugging)
 func ElevatorPrint(elevator *Elevator) {
 	fmt.Printf("  +----+-----+---+----------+\n")
 	fmt.Printf("  |%-4s| ^ v | C |%-10s|\n", "Flr", "Behaviour")
@@ -111,24 +79,20 @@ func ElevatorPrint(elevator *Elevator) {
 		}
 	}
 	fmt.Printf("  +----+-----+---+----------+\n")
-	fmt.Printf("  Direction: %s\n", elevator.Direction.String())
+	fmt.Printf("  Direction: %s\n", DirnToString(elevator.Direction))
 }
 
-// DirectionToString converts a MotorDirection to a string
 func DirnToString(d elevio.MotorDirection) string {
 	switch d {
 	case elevio.MD_Up:
 		return "up"
 	case elevio.MD_Down:
 		return "down"
-	case elevio.MD_Stop:
-		return "stop"
 	default:
 		return "stop"
 	}
 }
 
-// ButtonToString converts a ButtonType to a string
 func ButtonToString(b elevio.ButtonType) string {
 	switch b {
 	case elevio.BT_HallUp:
