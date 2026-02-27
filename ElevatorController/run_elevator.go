@@ -28,8 +28,9 @@ import (
 
 type ElevatorOutputChans struct {
 	MotorChan      chan<- elevio.MotorDirection
-	DoorLampChan   chan<- bool
 	CabLampChan    chan<- elevio.ButtonEvent
+	DoorLampChan   chan<- bool
+	LightChan      chan<- bool
 	FloorLampChan  chan<- int
 	HallButtonChan chan<- elevio.ButtonEvent
 	StateChan      chan<- Elevator

@@ -1,0 +1,40 @@
+<mxfile host="65bd71144e">
+    <diagram id="y03oCEpuGrjfIvy_HFG3" name="Page-1">
+        <mxGraphModel dx="596" dy="483" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="9" style="edgeStyle=none;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="2" target="4">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="2" value="Manager&lt;div&gt;-Converts Snapshot from network to HRA input&lt;/div&gt;&lt;div&gt;-Sends designated hallrequest via HallReqChan&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="10" y="130" width="240" height="250" as="geometry"/>
+                </mxCell>
+                <mxCell id="3" value="NetworkDriver&lt;div&gt;-Message handling&lt;/div&gt;&lt;div&gt;-Broadcast&lt;/div&gt;&lt;div&gt;-Filter based on cyclic counter&lt;/div&gt;&lt;div&gt;-Appends elevstate to snapshot&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="350" y="130" width="260" height="260" as="geometry"/>
+                </mxCell>
+                <mxCell id="4" value="ElevatorController&lt;div&gt;-Do something something bassed on requests&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="30" y="480" width="200" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="11" style="edgeStyle=none;html=1;" edge="1" parent="1" source="5" target="4">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="5" value="Elevio" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="410" y="505" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="6" value="Lights" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="270" y="620" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="8" value="Door" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+                    <mxGeometry x="400" y="620" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="10" value="HallReqChan/CabReqChan" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="130" y="408" width="170" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="12" value="OrderChan" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" vertex="1" parent="1">
+                    <mxGeometry x="270" y="505" width="80" height="30" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>

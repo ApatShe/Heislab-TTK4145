@@ -5,20 +5,6 @@ import (
 	"fmt"
 )
 
-// setAllLights synchronises all button lamps with the current request state.
-func setAllLights(e *Elevator) {
-	// Set cab button lamps
-	for f := 0; f < NumFloors; f++ {
-		elevio.SetButtonLamp(elevio.BT_Cab, f, e.CabRequests[f])
-	}
-
-	// Set hall button lamps
-	for f := 0; f < NumFloors; f++ {
-		elevio.SetButtonLamp(elevio.BT_HallUp, f, e.HallRequests[f][0])
-		elevio.SetButtonLamp(elevio.BT_HallDown, f, e.HallRequests[f][1])
-	}
-}
-
 // FsmOnInitBetweenFloors handles the case where the elevator starts
 // between floors: it drives downward until reaching a known floor.
 func FsmOnInitBetweenFloors(e *Elevator) {
@@ -91,7 +77,7 @@ func FsmOnRequestButtonPress(e *Elevator, btnFloor int, btnType elevio.ButtonTyp
 		return
 	}
 
-	setAllLights(e)
+	//setAllLights(e) should not be called here?
 
 	fmt.Println("\nNew state:")
 	ElevatorPrint(e)
@@ -133,7 +119,7 @@ func FsmOnFloorArrival(e *Elevator, newFloor int, timer *DoorTimer) {
 		fmt.Printf("DEBUG: Not moving, no action\n")
 	}
 
-	setAllLights(e)
+	//setAllLights(e) should not be called here?
 
 	fmt.Println("\nNew state:")
 	ElevatorPrint(e)
@@ -169,7 +155,6 @@ func FsmOnDoorTimeout(e *Elevator, timer *DoorTimer) {
 			elevio.SetDoorOpenLamp(false)
 			elevio.SetMotorDirection(e.Dirn)
 			fmt.Printf("DEBUG: FSM Starting movement dir=%v\n", e.Dirn)
-		
 
 		case EB_Idle:
 			fmt.Printf("DEBUG: Closing doors and becoming idle\n")
@@ -180,7 +165,7 @@ func FsmOnDoorTimeout(e *Elevator, timer *DoorTimer) {
 		fmt.Printf("DEBUG: Doors not open, no action\n")
 	}
 
-	setAllLights(e)
+	//setAllLights(e) should not be called here?
 
 	fmt.Println("\nNew state:")
 	ElevatorPrint(e)
