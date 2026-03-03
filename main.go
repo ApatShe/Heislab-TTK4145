@@ -115,9 +115,9 @@ func main() {
 
 	// ---- Networking node communication ----
 	// TODO: Try unbuffering some of these channels and see what happens
-	hallButtonChan := make(chan elevio.ButtonEvent, 1)         // hall presses → network node → cyclic counter
-	cabOrderChan := make(chan elevio.ButtonEvent, 1)           // cab presses  → elevator directly
-	hallRequestChan := make(chan [][2]bool, 1)                 // HRA matrix   → elevator
+	hallButtonChan := make(chan elevio.ButtonEvent, 1) // hall presses → network node → cyclic counter
+	cabOrderChan := make(chan elevio.ButtonEvent, 1)   // cab presses  → elevator directly
+	hallRequestChan := make(chan [][2]bool, 1)         // HRA matrix   → elevator
 	elevatorStateChan := make(chan elevatorcontroller.Elevator, 1)
 	snapshotChan := make(chan networkdriver.NetworkSnapshot, 1) // consensus snapshot → manager
 
@@ -127,7 +127,7 @@ func main() {
 
 	// ---- Lights communication
 	lightsElevatorStateChan := make(chan elevatorcontroller.Elevator, 1)
-
+	hallLightsChan := make(chan [][2]bool, 1)
 	// ---- Button router: split raw hardware poll into cab (local) and hall (network) ----
 	go func() {
 		for btn := range buttonEventChan {
@@ -140,7 +140,7 @@ func main() {
 	}()
 
 	// ---- Disconnect ----
-	disconnectChan := make(chan int, 1)
+	//disconnectChan := make(chan int, 1)
 
 	// ---- Spawn core threads: networking, elevator, door and lights ----
 	go networkdriver.RunNetworkNode(
@@ -154,6 +154,7 @@ func main() {
 	go manager.RunManager(
 		snapshotChan,    // ← consensus snapshot after cyclic counter + AdvanceToActive
 		hallRequestChan, // ← HRA-assigned [][2]bool matrix → elevator
+		hallLightsChan,  // ← HRA-assigned [][2]bool matrix → lights
 		id,
 	)
 
@@ -182,7 +183,7 @@ func main() {
 
 	go lights.RunLights(lightsElevatorStateChan, snapshotChan)
 
-	go disconnector.RunDisconnector(disconnectChan)
+	//go disconnector.RunDisconnector(disconnectChan)
 
 	for {
 		time.Sleep(time.Second)

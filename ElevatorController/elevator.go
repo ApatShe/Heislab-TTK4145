@@ -55,13 +55,13 @@ func ElevatorUninitialized() *Elevator {
 // the initial elevator state together with the door-open duration for use by
 // the door timer.
 func InitBetweenFloors() (Elevator, time.Duration) {
-	e := ElevatorUninitialized()
+	elevator := ElevatorUninitialized()
 	if elevio.GetFloor() == -1 {
 		elevio.SetMotorDirection(elevio.MD_Down)
-		e.Direction = elevio.MD_Down
-		e.Behaviour = EB_Moving
+		elevator.Direction = elevio.MD_Down
+		elevator.Behaviour = EB_Moving
 	}
-	return *e, e.Config.DoorOpenDuration
+	return *elevator, elevator.Config.DoorOpenDuration
 }
 
 // ---- Command pattern ----

@@ -57,14 +57,23 @@ func extractDesignatedHallRequests(delegatedHallRequests map[string][][2]bool, i
 func RunManager(
 	snapshotChan <-chan networkdriver.NetworkSnapshot,
 	hallRequestChan chan<- [][2]bool,
+	hallLightsChan chan<- [][2]bool,
 	id string,
 ) {
 	for {
 		snapshot := <-snapshotChan
 
 		hraInput := snapshotToHraInput(snapshot)
-		delegatedHallRequests := OutputHallRequesstAssigner(hraInput)
 
+		consensusHallRequests := hraInput.HallRequests
+
+		//non-blocking send of consensus hall requests to the lights manager, so that we can still delegate to the HRA
+		select {
+		case hallLightsChan <- consensusHallRequests:
+		default:
+		}
+
+		delegatedHallRequests := OutputHallRequesstAssigner(hraInput)
 		designatedHallRequests := extractDesignatedHallRequests(delegatedHallRequests, id)
 		if designatedHallRequests != nil {
 			hallRequestChan <- designatedHallRequests

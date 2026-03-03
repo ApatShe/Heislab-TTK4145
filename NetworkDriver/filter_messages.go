@@ -104,14 +104,15 @@ func copyElevators(src map[string]ElevatorState) map[string]ElevatorState {
 }
 
 func mergePeerElevator(local, received NetworkSnapshot) ElevatorState {
+	receivedNodeState := received.Elevators[received.NodeID]
 	return ElevatorState{
-		Behaviour: received.Elevators[received.NodeID].Behaviour,
-		Floor:     received.Elevators[received.NodeID].Floor,
-		Direction: received.Elevators[received.NodeID].Direction,
+		Behaviour: receivedNodeState.Behaviour,
+		Floor:     receivedNodeState.Floor,
+		Direction: receivedNodeState.Direction,
 		CabRequests: mergeCabRequests(
-			local.Elevators[local.NodeID].CabRequests,
-			received.Elevators[received.NodeID].CabRequests,
-			local.NodeID,
+			local.Elevators[received.NodeID].CabRequests, // our stored copy of this peer's cabs
+			receivedNodeState.CabRequests,
+			received.NodeID,
 			received.NodeID,
 		),
 	}
@@ -128,6 +129,46 @@ func FilteredMessage(local, received NetworkSnapshot) NetworkSnapshot {
 	merged.Elevators = mergeElevators(local, received)
 	merged.HallRequests = mergeHallRequests(local.HallRequests, received.HallRequests, received.NodeID)
 	return merged
+}
+
+// shouldAdoptHallRequest returns true when own entry for floorIndex/buttonIndex
+// is INACTIVE and at least one peer has already reached REQUESTED or higher.
+// This is the adoption predicate: case B of the INACTIVE→REQUESTED transition.
+func shouldAdoptHallRequest(snapshot NetworkSnapshot, floorIndex int, buttonIndex int) bool {
+	ownRequest := snapshot.HallRequests[snapshot.NodeID][floorIndex][buttonIndex]
+	return ownRequest == INACTIVE && isHallRequestKnownByAnyPeer(snapshot, floorIndex, buttonIndex)
+}
+
+// adoptHallRequestsFromPeers advances own hall-request entries to REQUESTED
+// for every floor/button where shouldAdoptHallRequest is true.
+func adoptHallRequestsFromPeers(snapshot NetworkSnapshot) NetworkSnapshot {
+	ownRequests := snapshot.HallRequests[snapshot.NodeID]
+	if ownRequests == nil {
+		return snapshot
+	}
+	for floorIndex := range ownRequests {
+		for buttonIndex := range ownRequests[floorIndex] {
+			if shouldAdoptHallRequest(snapshot, floorIndex, buttonIndex) {
+				ownRequests[floorIndex][buttonIndex] = REQUESTED
+			}
+		}
+	}
+	snapshot.HallRequests[snapshot.NodeID] = ownRequests
+	return snapshot
+}
+
+// isHallRequestKnownByAnyPeer returns true when at least one peer (excluding
+// self) has reached REQUESTED or higher for floorIndex/buttonIndex.
+func isHallRequestKnownByAnyPeer(snapshot NetworkSnapshot, floorIndex int, buttonIndex int) bool {
+	for peerID, peerRequests := range snapshot.HallRequests {
+		if peerID == snapshot.NodeID {
+			continue
+		}
+		if peerRequests != nil && peerRequests[floorIndex][buttonIndex] >= REQUESTED {
+			return true
+		}
+	}
+	return false
 }
 
 // allPeersHaveRequested returns true when every peer in activePeerIDs has

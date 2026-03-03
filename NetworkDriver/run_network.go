@@ -26,9 +26,11 @@ func RunNetworkNode(
 	iter := uint64(0)
 
 	peerUpdateCh := make(chan peers.PeerUpdate)
-	peerTxEnable := make(chan bool)
+	peerTxEnable := make(chan bool, 1)
 	snapshotTx := make(chan NetworkSnapshot)
 	snapshotRx := make(chan NetworkSnapshot)
+
+	peerTxEnable <- false // hold off broadcasting until own state is recovered
 
 	go peers.Transmitter(peerUpdateBroadcastPort, id, peerTxEnable)
 	go peers.Receiver(peerUpdateBroadcastPort, peerUpdateCh)
@@ -39,10 +41,22 @@ func RunNetworkNode(
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+	readyToBroadcast := false
+
+	enableBroadcast := func() {
+		if !readyToBroadcast {
+			readyToBroadcast = true
+			peerTxEnable <- true
+		}
+	}
+
 	for {
 		select {
 
 		case <-ticker.C:
+			if !readyToBroadcast {
+				break
+			}
 			iter++
 			currentSnapshot.Iter = iter
 			snapshotTx <- currentSnapshot
@@ -58,6 +72,11 @@ func RunNetworkNode(
 			if peerUpdate.New == id {
 				currentSnapshot = flipOwnUnknownsToInactive(currentSnapshot, id)
 			}
+			// If we are the only peer on the network there is no state to recover
+			// from — safe to start broadcasting immediately.
+			if isAloneOnNetwork(peerUpdate) {
+				enableBroadcast()
+			}
 			removeLostPeers(knownStates, peerUpdate.Lost)
 
 		case receivedSnapshot := <-snapshotRx:
@@ -67,8 +86,12 @@ func RunNetworkNode(
 			}
 			knownStates[receivedSnapshot.NodeID] = receivedSnapshot
 			currentSnapshot = FilteredMessage(currentSnapshot, receivedSnapshot)
+			currentSnapshot = adoptHallRequestsFromPeers(currentSnapshot)
 			currentSnapshot = AdvanceToActive(currentSnapshot, collectActivePeerIDs(id, knownStates))
 			snapshotChan <- currentSnapshot
+			// We have absorbed at least one peer snapshot — own UNKNOWN cabs have
+			// been recovered via mergeCabRequests. Safe to start broadcasting.
+			enableBroadcast()
 		}
 	}
 }
@@ -128,7 +151,22 @@ func collectActivePeerIDs(localID string, knownStates map[string]NetworkSnapshot
 	return peerIDs
 }
 
+// isAloneOnNetwork returns true when the peer list contains only one entry
+// (self), meaning there are no other nodes to recover state from.
+func isAloneOnNetwork(peerUpdate peers.PeerUpdate) bool {
+	return len(peerUpdate.Peers) == 1
+}
+
 func newNetworkSnapshot(initState elevatorcontroller.Elevator, id string) NetworkSnapshot {
+	// Own cab requests are initialized as UNKNOWN so that mergeCabRequests can
+	// recover the correct state from a peer's snapshot before first broadcast.
+	ownCabRequests := make([]RequestState, elevatorcontroller.NumFloors)
+	ownElevatorState := ElevatorState{
+		Behaviour:   initState.Behaviour.String(),
+		Floor:       initState.Floor,
+		Direction:   elevatorcontroller.DirnToString(initState.Direction),
+		CabRequests: ownCabRequests, // all UNKNOWN (zero value)
+	}
 	ownHallRequests := make([][2]RequestState, elevatorcontroller.NumFloors)
 	return NetworkSnapshot{
 		NodeID: id,
@@ -136,7 +174,7 @@ func newNetworkSnapshot(initState elevatorcontroller.Elevator, id string) Networ
 			id: ownHallRequests,
 		},
 		Elevators: map[string]ElevatorState{
-			id: LocalElevatorToElevatorState(initState),
+			id: ownElevatorState,
 		},
 		Iter: 0,
 	}

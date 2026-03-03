@@ -35,7 +35,7 @@ func LocalElevatorToElevatorState(elevator elevatorcontroller.Elevator) Elevator
 	return ElevatorState{
 		Behaviour:   elevator.Behaviour.String(),
 		Floor:       elevator.Floor,
-		Direction:   elevator.Direction.String(),
+		Direction:   elevatorcontroller.DirnToString(elevator.Direction),
 		CabRequests: cabs,
 	}
 }
