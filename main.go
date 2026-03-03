@@ -13,12 +13,6 @@ import (
 	"time"
 )
 
-const (
-	defaultElevatorPort = 15657
-	obstructionTimeout  = time.Second * 10
-	motorTimeout        = time.Second * 10
-)
-
 // Problems arising during FAT and other testing
 // - How to test disconnect :sad
 //   we make at home version
@@ -54,7 +48,6 @@ const (
 // :DD
 func main() {
 
-	//select {}
 	const (
 		defaultElevatorPort = 15657
 		obstructionTimeout  = time.Second * 10
@@ -63,20 +56,20 @@ func main() {
 
 	// ---- Flags ----
 	var port int
-	var id string
+	flag.IntVar(&port, "port", defaultElevatorPort, "Simulator TCP port")
 
-	//-----Set machine specific id ----
-	id, err := localip.LocalIP()
+	// id uniquely identifies this node on the network.
+	// Defaults to local IP so physical machines are automatically distinct.
+	// Override with --id when running multiple instances on the same machine.
+	localIP, err := localip.LocalIP()
 	if err != nil {
 		panic(fmt.Sprintf("could not resolve local IP: %v", err))
 	}
-
-	fmt.Printf("Starting node with id: %s\n", id)
-	//flag.IntVar(&port, "port", defaultElevatorPort, "Elevator server port")
-	//flag.StringVar(&id, "id", "", "Network node id")
-	//fmt.Println("Started!")
+	var id string
+	flag.StringVar(&id, "id", localIP, "Network node id (default: local IP)")
 
 	flag.Parse()
+	fmt.Printf("Starting node id=%s port=%d\n", id, port)
 
 	// // ---- Initialize elevator ----
 	elevio.Init("localhost:"+strconv.Itoa(port), elevatorcontroller.NumFloors)
@@ -99,20 +92,19 @@ func main() {
 	resetDoorTimerChan := make(chan int)
 	stopDoorTimerChan := make(chan int)
 	doorTimeoutChan := make(chan int)
-	go timer.RunTimer(resetDoorTimerChan, stopDoorTimerChan, doorTimeoutChan, doorOpenDuration, false, "Door timer")
+	go timer.RunTimer(resetDoorTimerChan, stopDoorTimerChan, doorTimeoutChan, doorOpenDuration, false, "Door Timer")
 
 	// Obstruction timer
-	resetObstructionTimerChan := make(chan int)
-	stopObstructionTimerChan := make(chan int)
+	resetObstructionWatchdogTimerChan := make(chan int)
+	stopObstructionWatchdogTimerChan := make(chan int)
 	obstructionTimeoutChan := make(chan int)
-	go timer.RunTimer(resetObstructionTimerChan, stopObstructionTimerChan, obstructionTimeoutChan, obstructionTimeout, true, "Obstruction timer")
+	go timer.RunTimer(resetObstructionWatchdogTimerChan, stopObstructionWatchdogTimerChan, nil, obstructionTimeout, true, "Obstruction Watchdog")
 
 	// Motor timer
-	resetMotorTimerChan := make(chan int)
-	stopMotorTimerChan := make(chan int)
-	motorTimeoutChan := make(chan int)
-	go timer.RunTimer(resetMotorTimerChan, stopMotorTimerChan, motorTimeoutChan, motorTimeout, true, "Motor timer")
+	resetMotorWatchdogTimerChan := make(chan int)
+	stopMotorWatchdogTimerChan := make(chan int)
 
+	go timer.RunTimer(resetMotorWatchdogTimerChan, stopMotorWatchdogTimerChan, nil, motorTimeout, true, "Motor Watchdog")
 	// ---- Networking node communication ----
 	// TODO: Try unbuffering some of these channels and see what happens
 	hallButtonChan := make(chan elevio.ButtonEvent, 1) // hall presses → network node → cyclic counter
@@ -166,22 +158,23 @@ func main() {
 		doorRequestChan,
 		lightsElevatorStateChan,
 		elevatorStateChan,
-		resetMotorTimerChan,
-		stopMotorTimerChan,
+		resetMotorWatchdogTimerChan,
+		stopMotorWatchdogTimerChan,
 	)
 
 	go door.RunDoor(
 		obstructionChan,
 		doorTimeoutChan,
+		obstructionTimeoutChan,
 		doorRequestChan,
 		doorCloseChan,
 		resetDoorTimerChan,
-		resetObstructionTimerChan,
-		stopObstructionTimerChan,
+		resetObstructionWatchdogTimerChan,
+		stopObstructionWatchdogTimerChan,
 		obstructionInit,
 	)
 
-	go lights.RunLights(lightsElevatorStateChan, snapshotChan)
+	go lights.RunLights(lightsElevatorStateChan, hallLightsChan)
 
 	//go disconnector.RunDisconnector(disconnectChan)
 

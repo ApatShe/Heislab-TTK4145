@@ -24,8 +24,8 @@ func RunElevator(
 	doorRequestChan chan<- int,
 	lightsElevatorStateChan chan<- Elevator,
 	elevatorStateChan chan<- Elevator,
-	resetMotorTimerChan chan<- int,
-	stopMotorTimerChan chan<- int,
+	resetMotorWatchdogTimerChan chan<- int,
+	stopMotorWatchdogTimerChan chan<- int,
 ) {
 	elevator := ElevatorUninitialized()
 
@@ -34,7 +34,7 @@ func RunElevator(
 	if elevio.GetFloor() == -1 {
 		elevator.Direction = elevio.MD_Down
 		elevator.Behaviour = EB_Moving
-		resetMotorTimerChan <- 1
+		resetMotorWatchdogTimerChan <- 1
 	}
 
 	broadcast := func() {
@@ -69,9 +69,10 @@ func RunElevator(
 
 		case <-doorCloseChan:
 			_, commands = FsmOnDoorClose(elevator)
+
 		}
 
-		executeCommands(commands, doorRequestChan, resetMotorTimerChan, stopMotorTimerChan)
+		executeCommands(commands, doorRequestChan, resetMotorWatchdogTimerChan, stopMotorWatchdogTimerChan)
 		broadcast()
 	}
 }
@@ -82,8 +83,8 @@ func RunElevator(
 func executeCommands(
 	commands []ElevatorCommand,
 	doorRequestChan chan<- int,
-	resetMotorTimerChan chan<- int,
-	stopMotorTimerChan chan<- int,
+	resetMotorWatchdogTimerChan chan<- int,
+	stopMotorWatchdogTimerChan chan<- int,
 ) {
 	for _, cmd := range commands {
 		switch cmd.Type {
@@ -91,14 +92,14 @@ func executeCommands(
 			dir := cmd.Value.(elevio.MotorDirection)
 			elevio.SetMotorDirection(dir)
 			if dir != elevio.MD_Stop {
-				resetMotorTimerChan <- 1
+				resetMotorWatchdogTimerChan <- 1
 			} else {
-				stopMotorTimerChan <- 1
+				stopMotorWatchdogTimerChan <- 1
 			}
 
 		case CmdSetFloorIndicator:
 			elevio.SetFloorIndicator(cmd.Value.(int))
-			stopMotorTimerChan <- 1
+			stopMotorWatchdogTimerChan <- 1
 
 		case CmdDoorRequest:
 			doorRequestChan <- 1

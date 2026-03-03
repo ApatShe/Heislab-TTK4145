@@ -1,0 +1,3 @@
+num_elevators: 3
+num_floors: 4
+base_sim_port: 15657   # simulator ports: 15657, 15658, 15659
