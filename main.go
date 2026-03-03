@@ -5,6 +5,7 @@ import (
 	"Heislab/Network/network/localip"
 	networkdriver "Heislab/NetworkDriver"
 	"Heislab/driver-go/elevio"
+	"Heislab/manager"
 	"Heislab/timer"
 	"flag"
 	"fmt"
@@ -114,9 +115,11 @@ func main() {
 
 	// ---- Networking node communication ----
 	// TODO: Try unbuffering some of these channels and see what happens
-	orderChan := make(chan elevio.ButtonEvent, 1)
+	hallButtonChan := make(chan elevio.ButtonEvent, 1)         // hall presses → network node → cyclic counter
+	cabOrderChan := make(chan elevio.ButtonEvent, 1)           // cab presses  → elevator directly
+	hallRequestChan := make(chan [][2]bool, 1)                 // HRA matrix   → elevator
 	elevatorStateChan := make(chan elevatorcontroller.Elevator, 1)
-	peerStateChan := make(chan []networkdriver.NetworkSnapshot, 1)
+	snapshotChan := make(chan networkdriver.NetworkSnapshot, 1) // consensus snapshot → manager
 
 	// ---- Door communication ----
 	doorRequestChan := make(chan int)
@@ -125,51 +128,39 @@ func main() {
 	// ---- Lights communication
 	lightsElevatorStateChan := make(chan elevatorcontroller.Elevator, 1)
 
-	// ---- Manager communication ----
-
-	// ---- ELevator communication ----
-	motorChan := make(chan elevio.MotorDirection, 1)
-	doorLampChan := make(chan bool, 1)
-	cabLampChan := make(chan elevio.ButtonEvent, 1)
-	floorLampChan := make(chan int, 1)
-	hallButtonChan := make(chan elevio.ButtonEvent, 1)
-
-	out := elevatorcontroller.ElevatorOutputChans{
-		MotorChan:      motorChan,
-		DoorLampChan:   doorLampChan,
-		CabLampChan:    cabLampChan,
-		FloorLampChan:  floorLampChan,
-		HallButtonChan: hallButtonChan,
-		StateChan:      elevatorStateChan,
-	}
-
-	go elevatorcontroller.RunElevator(drv_buttons, drv_floors, drv_obstr, drv_stop, hallRequestChan, out)
+	// ---- Button router: split raw hardware poll into cab (local) and hall (network) ----
+	go func() {
+		for btn := range buttonEventChan {
+			if btn.Button == elevio.BT_Cab {
+				cabOrderChan <- btn
+			} else {
+				hallButtonChan <- btn
+			}
+		}
+	}()
 
 	// ---- Disconnect ----
 	disconnectChan := make(chan int, 1)
 
 	// ---- Spawn core threads: networking, elevator, door and lights ----
 	go networkdriver.RunNetworkNode(
-		buttonEventChan,
+		hallButtonChan,
 		elevatorStateChan,
-		orderChan,
-		peerStateChan,
-		disconnectChan,
+		snapshotChan,
 		initElevator,
 		id,
 	)
 
-	go networkdriver.RunManager(
-		peerStateChan,     // ← consumes snapshot
-		elevatorStateChan, // ← consumes local elevator state
-		orderChan,
-		peerStateChan, // ← fans out to lights
-		disconnectChan,
+	go manager.RunManager(
+		snapshotChan,    // ← consensus snapshot after cyclic counter + AdvanceToActive
+		hallRequestChan, // ← HRA-assigned [][2]bool matrix → elevator
+		id,
 	)
 
 	go elevatorcontroller.RunElevator(
 		floorChan,
-		orderChan,
+		cabOrderChan,
+		hallRequestChan,
 		doorCloseChan,
 		doorRequestChan,
 		lightsElevatorStateChan,
@@ -189,7 +180,7 @@ func main() {
 		obstructionInit,
 	)
 
-	go lights.RunLights(lightsElevatorStateChan, peerStateChan)
+	go lights.RunLights(lightsElevatorStateChan, snapshotChan)
 
 	go disconnector.RunDisconnector(disconnectChan)
 

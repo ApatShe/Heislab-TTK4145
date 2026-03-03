@@ -3,25 +3,38 @@ package elevatorcontroller
 import (
 	"Heislab/driver-go/elevio"
 	"fmt"
-	"os"
-	"time"
 )
 
+// RunElevator runs the elevator finite state machine.
+//
+// Two distinct order paths:
+//   - cabOrderChan  — cab button events arriving directly from hardware polling.
+//   - hallRequestChan — full hall-request matrix pushed by the manager after the
+//     HRA has run and the network has reached consensus.
+//
+// Hall button presses are never sent here directly; they travel:
+//
+//	button → RunNetworkNode → manager/HRA → network broadcast → consensus
+//	→ manager pushes [][2]bool matrix → hallRequestChan → here.
 func RunElevator(
-	drv_buttons <-chan elevio.ButtonEvent,
-	drv_floors <-chan int,
-	drv_obstr <-chan bool,
-	drv_stop <-chan bool,
-	orderChan chan<- elevio.ButtonEvent,
-	servedChan chan<- elevio.ButtonEvent,
-	elevatorStateChan chan<- Elevator,
+	floorChan <-chan int,
+	cabOrderChan <-chan elevio.ButtonEvent,
 	hallRequestChan <-chan [][2]bool,
+	doorCloseChan <-chan int,
+	doorRequestChan chan<- int,
+	lightsElevatorStateChan chan<- Elevator,
+	elevatorStateChan chan<- Elevator,
+	resetMotorTimerChan chan<- int,
+	stopMotorTimerChan chan<- int,
 ) {
 	elevator := ElevatorUninitialized()
-	timer := NewDoorTimer()
 
+	// If we start between floors the motor was already started by InitBetweenFloors;
+	// arm the motor watchdog so a stall is detected.
 	if elevio.GetFloor() == -1 {
-		FsmOnInitBetweenFloors(elevator)
+		elevator.Direction = elevio.MD_Down
+		elevator.Behaviour = EB_Moving
+		resetMotorTimerChan <- 1
 	}
 
 	broadcast := func() {
@@ -29,69 +42,66 @@ func RunElevator(
 		case elevatorStateChan <- *elevator:
 		default:
 		}
-	}
-
-	forwardServed := func(served []elevio.ButtonEvent) {
-		for _, btn := range served {
-			servedChan <- btn
+		select {
+		case lightsElevatorStateChan <- *elevator:
+		default:
 		}
 	}
 
 	fmt.Println("Elevator controller started!")
 
 	for {
+		var commands []ElevatorCommand
+
 		select {
-		case btn := <-drv_buttons:
-			fmt.Printf("Button event: Floor=%d Type=%s\n", btn.Floor, ButtonToString(btn.Button))
-			if btn.Button == elevio.BT_Cab {
-				forwardServed(CabRequestButtonPress(elevator, btn.Floor, timer))
-			} else {
-				orderChan <- btn
-			}
-
-		case floor := <-drv_floors:
-			forwardServed(FsmOnFloorArrival(elevator, floor, timer))
-
-		case <-timer.Chan():
-			forwardServed(FsmOnDoorTimeout(elevator, timer))
+		case btn := <-cabOrderChan:
+			// Cab requests are local — handle immediately.
+			fmt.Printf("Cab button: Floor=%d\n", btn.Floor)
+			_, commands = FsmOnCabRequest(elevator, btn.Floor)
 
 		case newHallRequests := <-hallRequestChan:
-			fmt.Printf("DEBUG: Received hall requests from Manager\n")
-			replaceHallRequests(elevator, newHallRequests)
-			if elevator.Behaviour == EB_Idle {
-				forwardServed(FsmActOnBehaviourPair(elevator, RequestsChooseDirection(elevator), timer))
-			}
+			// Hall-request matrix assigned by manager after HRA + network consensus.
+			fmt.Printf("Hall request update from manager\n")
+			_, commands = FsmOnHallRequestsUpdate(elevator, newHallRequests)
 
-		case obstr := <-drv_obstr:
-			fmt.Printf("Obstruction: %v\n", obstr)
-			elevator.ObstructionActive = obstr
-			if !obstr && elevator.Behaviour == EB_DoorOpen {
-				timer.Start(elevator.Config.DoorOpenDuration)
-			}
+		case floor := <-floorChan:
+			_, commands = FsmOnFloorArrival(elevator, floor)
 
-		case stop := <-drv_stop:
-			fmt.Printf("Stop button: %v\n", stop)
-			elevio.SetStopLamp(stop)
-			if stop {
-				elevio.SetMotorDirection(elevio.MD_Stop)
-				for f := 0; f < NumFloors; f++ {
-					elevator.CabRequests[f] = false
-				}
-				switch elevator.Behaviour {
-				case EB_Moving:
-					elevator.Direction = elevio.MD_Stop
-					elevator.Behaviour = EB_Idle
-				case EB_Idle, EB_DoorOpen:
-					elevio.SetDoorOpenLamp(true)
-					timer.Start(elevator.Config.DoorOpenDuration)
-					elevator.Behaviour = EB_DoorOpen
-				}
-				fmt.Println("Exiting in 5 seconds...")
-				time.Sleep(5 * time.Second)
-				os.Exit(0)
-			}
+		case <-doorCloseChan:
+			_, commands = FsmOnDoorClose(elevator)
 		}
 
+		executeCommands(commands, doorRequestChan, resetMotorTimerChan, stopMotorTimerChan)
 		broadcast()
+	}
+}
+
+// executeCommands sends the hardware actions produced by the FSM to their
+// respective drivers. Motor-timer resets/stops are side effects of
+// CmdSetMotorDirection and CmdSetFloorIndicator — not separate command types.
+func executeCommands(
+	commands []ElevatorCommand,
+	doorRequestChan chan<- int,
+	resetMotorTimerChan chan<- int,
+	stopMotorTimerChan chan<- int,
+) {
+	for _, cmd := range commands {
+		switch cmd.Type {
+		case CmdSetMotorDirection:
+			dir := cmd.Value.(elevio.MotorDirection)
+			elevio.SetMotorDirection(dir)
+			if dir != elevio.MD_Stop {
+				resetMotorTimerChan <- 1
+			} else {
+				stopMotorTimerChan <- 1
+			}
+
+		case CmdSetFloorIndicator:
+			elevio.SetFloorIndicator(cmd.Value.(int))
+			stopMotorTimerChan <- 1
+
+		case CmdDoorRequest:
+			doorRequestChan <- 1
+		}
 	}
 }

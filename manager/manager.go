@@ -3,15 +3,17 @@ package manager
 import (
 	elevatorcontroller "Heislab/ElevatorController"
 	networkdriver "Heislab/NetworkDriver"
-	"Heislab/driver-go/elevio"
-	"fmt"
 )
 
 func hallRequestToHRAInput(snapshot networkdriver.NetworkSnapshot) [][2]bool {
-	hraInput := make([][2]bool, len(snapshot.HallRequests))
-	for floor := range snapshot.HallRequests {
-		for btn := range snapshot.HallRequests[floor] {
-			hraInput[floor][btn] = networkdriver.RequestStateToBool(snapshot.HallRequests[floor][btn])
+	hraInput := make([][2]bool, elevatorcontroller.NumFloors)
+	// HallRequests is map[nodeID][][2]RequestState — iterate over node entries,
+	// not floor indices. OR together all nodes' views: a request is active if
+	// any node has it as ACTIVE.
+	for _, nodeRequests := range snapshot.HallRequests {
+		for floor, btnPair := range nodeRequests {
+			hraInput[floor][0] = hraInput[floor][0] || networkdriver.RequestStateToBool(btnPair[0])
+			hraInput[floor][1] = hraInput[floor][1] || networkdriver.RequestStateToBool(btnPair[1])
 		}
 	}
 	return hraInput
@@ -54,28 +56,17 @@ func extractDesignatedHallRequests(delegatedHallRequests map[string][][2]bool, i
 
 func RunManager(
 	snapshotChan <-chan networkdriver.NetworkSnapshot,
-	orderChan <-chan elevio.ButtonEvent,
-	elevStateChan <-chan elevatorcontroller.Elevator,
 	hallRequestChan chan<- [][2]bool,
-	hallRequestStateChan chan<- [][2]networkdriver.RequestState,
 	id string,
 ) {
-	localHallRequests := make([][2]networkdriver.RequestState, elevatorcontroller.NumFloors)
 	for {
-		select {
-		//TODO: Change the channel to a ElevatorController
-		case button := <-orderChan:
-			fmt.Printf("Manager Intercepted order: Floor=%d, Type=%v\n", button.Floor, button.Button)
-			localHallRequests[button.Floor][int(button.Button)] = networkdriver.REQUESTED
-			hallRequestStateChan <- localHallRequests
+		snapshot := <-snapshotChan
 
-		case snapshot := <-snapshotChan:
+		hraInput := snapshotToHraInput(snapshot)
+		delegatedHallRequests := OutputHallRequesstAssigner(hraInput)
 
-			hraInput := snapshotToHraInput(snapshot)
-			delegatedHallRequests := OutputHallRequesstAssigner(hraInput)
-
-			designatedHallRequests := extractDesignatedHallRequests(delegatedHallRequests, id)
-
+		designatedHallRequests := extractDesignatedHallRequests(delegatedHallRequests, id)
+		if designatedHallRequests != nil {
 			hallRequestChan <- designatedHallRequests
 		}
 	}

@@ -129,3 +129,55 @@ func FilteredMessage(local, received NetworkSnapshot) NetworkSnapshot {
 	merged.HallRequests = mergeHallRequests(local.HallRequests, received.HallRequests, received.NodeID)
 	return merged
 }
+
+// allPeersHaveRequested returns true when every peer in activePeerIDs has
+// acknowledged floorIndex/buttonIndex with at least a REQUESTED state.
+// This is the consensus predicate for the cyclic counter promotion step.
+func allPeersHaveRequested(snapshot NetworkSnapshot, activePeerIDs []string, floorIndex int, buttonIndex int) bool {
+	for _, peerID := range activePeerIDs {
+		peerRequests := snapshot.HallRequests[peerID]
+		if peerRequests == nil || peerRequests[floorIndex][buttonIndex] < REQUESTED {
+			return false
+		}
+	}
+	return true
+}
+
+// withUnknownsFlippedToInactive returns a copy of reqs where every UNKNOWN
+// entry has been replaced with INACTIVE. Used when a node first appears on
+// the peer list and can safely assume it has no pending hall requests.
+func withUnknownsFlippedToInactive(reqs [][2]RequestState) [][2]RequestState {
+	result := make([][2]RequestState, len(reqs))
+	copy(result, reqs)
+	for floorIndex := range result {
+		for buttonIndex := range result[floorIndex] {
+			if result[floorIndex][buttonIndex] == UNKNOWN {
+				result[floorIndex][buttonIndex] = INACTIVE
+			}
+		}
+	}
+	return result
+}
+
+// AdvanceToActive promotes hall requests from REQUESTED to ACTIVE for every
+// floor/button where all active peers have reached at least REQUESTED.
+// This is the consensus promotion step: a confirmed request the HRA will act on.
+func AdvanceToActive(snapshot NetworkSnapshot, activePeerIDs []string) NetworkSnapshot {
+	ownRequests := snapshot.HallRequests[snapshot.NodeID]
+	if ownRequests == nil {
+		return snapshot
+	}
+	for floorIndex := 0; floorIndex < len(ownRequests); floorIndex++ {
+		for buttonIndex := 0; buttonIndex < 2; buttonIndex++ {
+			isAlreadyActive := ownRequests[floorIndex][buttonIndex] == ACTIVE
+			if isAlreadyActive {
+				continue
+			}
+			if allPeersHaveRequested(snapshot, activePeerIDs, floorIndex, buttonIndex) {
+				ownRequests[floorIndex][buttonIndex] = ACTIVE
+			}
+		}
+	}
+	snapshot.HallRequests[snapshot.NodeID] = ownRequests
+	return snapshot
+}

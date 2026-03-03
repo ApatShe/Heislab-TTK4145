@@ -51,6 +51,34 @@ func ElevatorUninitialized() *Elevator {
 	}
 }
 
+// InitBetweenFloors moves the motor down until a floor is reached and returns
+// the initial elevator state together with the door-open duration for use by
+// the door timer.
+func InitBetweenFloors() (Elevator, time.Duration) {
+	e := ElevatorUninitialized()
+	if elevio.GetFloor() == -1 {
+		elevio.SetMotorDirection(elevio.MD_Down)
+		e.Direction = elevio.MD_Down
+		e.Behaviour = EB_Moving
+	}
+	return *e, e.Config.DoorOpenDuration
+}
+
+// ---- Command pattern ----
+
+type CommandType int
+
+const (
+	CmdSetMotorDirection CommandType = iota
+	CmdSetFloorIndicator
+	CmdDoorRequest
+)
+
+type ElevatorCommand struct {
+	Type  CommandType
+	Value any // typed per CommandType: MotorDirection for CmdSetMotorDirection, int for the rest
+}
+
 func ElevatorPrint(elevator *Elevator) {
 	fmt.Printf("  +----+-----+---+----------+\n")
 	fmt.Printf("  |%-4s| ^ v | C |%-10s|\n", "Flr", "Behaviour")

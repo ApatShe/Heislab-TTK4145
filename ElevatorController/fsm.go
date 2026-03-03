@@ -5,51 +5,50 @@ import (
 	"fmt"
 )
 
-// FsmActOnBehaviourPair writes direction+behaviour into elevator and executes
-// the corresponding hardware action. Returns served hall requests for Manager.
+// FsmActOnBehaviourPair writes direction+behaviour into elevator and returns
+// the hardware commands to execute alongside any served hall requests.
 // Only caller of RequestsClearAtCurrentFloor.
-func FsmActOnBehaviourPair(elevator *Elevator, pair DirnBehaviourPair, timer *DoorTimer) []elevio.ButtonEvent {
+func FsmActOnBehaviourPair(elevator *Elevator, pair DirnBehaviourPair) ([]elevio.ButtonEvent, []ElevatorCommand) {
 	elevator.Direction = pair.Direction
 	elevator.Behaviour = pair.Behaviour
 
 	switch pair.Behaviour {
 	case EB_DoorOpen:
-		elevio.SetDoorOpenLamp(true)
-		timer.Start(elevator.Config.DoorOpenDuration)
-		return RequestsClearAtCurrentFloor(elevator)
+		// Notify the door module to open the door and start its timer.
+		return RequestsClearAtCurrentFloor(elevator), []ElevatorCommand{
+			{Type: CmdDoorRequest},
+		}
 
 	case EB_Moving:
-		elevio.SetMotorDirection(elevator.Direction)
+		return nil, []ElevatorCommand{
+			{Type: CmdSetMotorDirection, Value: elevator.Direction},
+		}
 
 	case EB_Idle:
-		elevio.SetMotorDirection(elevio.MD_Stop)
+		return nil, []ElevatorCommand{
+			{Type: CmdSetMotorDirection, Value: elevio.MD_Stop},
+		}
 	}
 
-	return nil
+	return nil, nil
 }
 
-func FsmOnInitBetweenFloors(elevator *Elevator) {
-	fmt.Printf("\n\nFsmOnInitBetweenFloors()\n")
+// FsmOnCabRequest handles a cab button press that arrives directly from hardware.
+// Hall button presses are NEVER handled here — they go to the manager, which
+// runs the HRA, achieves network consensus, and pushes back a hall-request
+// matrix via FsmOnHallRequestsUpdate.
+func FsmOnCabRequest(elevator *Elevator, btnFloor int) ([]elevio.ButtonEvent, []ElevatorCommand) {
+	fmt.Printf("\n\nFsmOnCabRequest(floor=%d)\n", btnFloor)
 	ElevatorPrint(elevator)
 
-	elevio.SetMotorDirection(elevio.MD_Down)
-	elevator.Direction = elevio.MD_Down
-	elevator.Behaviour = EB_Moving
-
-	fmt.Println("\nNew state:")
-	ElevatorPrint(elevator)
-}
-
-// CabRequestButtonPress handles a cab button press.
-// Hall buttons never reach here — RunElevator routes them to orderChan.
-func CabRequestButtonPress(elevator *Elevator, btnFloor int, timer *DoorTimer) []elevio.ButtonEvent {
-	fmt.Printf("\n\nCabRequestButtonPress(%d)\n", btnFloor)
-	ElevatorPrint(elevator)
+	var served []elevio.ButtonEvent
+	var commands []ElevatorCommand
 
 	switch elevator.Behaviour {
 	case EB_DoorOpen:
 		if CabRequestShouldClearImmediately(elevator, btnFloor) {
-			timer.Start(elevator.Config.DoorOpenDuration)
+			// Already at this floor with doors open — restart door timer.
+			commands = append(commands, ElevatorCommand{Type: CmdDoorRequest})
 		} else {
 			elevator.CabRequests[btnFloor] = true
 		}
@@ -59,35 +58,62 @@ func CabRequestButtonPress(elevator *Elevator, btnFloor int, timer *DoorTimer) [
 
 	case EB_Idle:
 		elevator.CabRequests[btnFloor] = true
-		return FsmActOnBehaviourPair(elevator, RequestsChooseDirection(elevator), timer)
+		served, commands = FsmActOnBehaviourPair(elevator, RequestsChooseDirection(elevator))
 	}
 
 	fmt.Println("\nNew state:")
 	ElevatorPrint(elevator)
-	return nil
+	return served, commands
 }
 
-func FsmOnFloorArrival(elevator *Elevator, newFloor int, timer *DoorTimer) []elevio.ButtonEvent {
+// FsmOnHallRequestsUpdate replaces the elevator's hall-request matrix with the
+// HRA-assigned matrix received from the manager after network consensus.
+// If the elevator is idle it acts immediately on any newly assigned requests.
+func FsmOnHallRequestsUpdate(elevator *Elevator, newRequests [][2]bool) ([]elevio.ButtonEvent, []ElevatorCommand) {
+	fmt.Printf("\n\nFsmOnHallRequestsUpdate()\n")
+	ElevatorPrint(elevator)
+
+	replaceHallRequests(elevator, newRequests)
+
+	var served []elevio.ButtonEvent
+	var commands []ElevatorCommand
+
+	if elevator.Behaviour == EB_Idle {
+		served, commands = FsmActOnBehaviourPair(elevator, RequestsChooseDirection(elevator))
+	}
+
+	fmt.Println("\nNew state:")
+	ElevatorPrint(elevator)
+	return served, commands
+}
+
+func FsmOnFloorArrival(elevator *Elevator, newFloor int) ([]elevio.ButtonEvent, []ElevatorCommand) {
 	fmt.Printf("\n\nFsmOnFloorArrival(%d)\n", newFloor)
 	ElevatorPrint(elevator)
 
 	elevator.Floor = newFloor
+	commands := []ElevatorCommand{
+		{Type: CmdSetFloorIndicator, Value: newFloor},
+	}
+
+	var served []elevio.ButtonEvent
 
 	switch elevator.Behaviour {
 	case EB_Moving:
 		if HasNoRequests(elevator) {
-			// Init just completed, no requests yet — just go idle
-			elevio.SetMotorDirection(elevio.MD_Stop)
+			// Initialisation complete, no pending requests — go idle.
 			elevator.Behaviour = EB_Idle
+			elevator.Direction = elevio.MD_Stop
+			commands = append(commands,
+				ElevatorCommand{Type: CmdSetMotorDirection, Value: elevio.MD_Stop},
+			)
 
 		} else if RequestsShouldStop(elevator) {
-			elevio.SetMotorDirection(elevio.MD_Stop)
-			served := FsmActOnBehaviourPair(elevator, DirnBehaviourPair{elevator.Direction, EB_DoorOpen}, timer)
-			fmt.Println("\nNew state:")
-			ElevatorPrint(elevator)
-			return served
+			var stopCmds []ElevatorCommand
+			served, stopCmds = FsmActOnBehaviourPair(elevator, DirnBehaviourPair{elevator.Direction, EB_DoorOpen})
+			commands = append(commands, stopCmds...)
 		}
-		// else: continue moving, no action
+		// else: continue moving, nothing extra
 
 	default:
 		fmt.Printf("DEBUG: Not moving, no action\n")
@@ -95,25 +121,20 @@ func FsmOnFloorArrival(elevator *Elevator, newFloor int, timer *DoorTimer) []ele
 
 	fmt.Println("\nNew state:")
 	ElevatorPrint(elevator)
-	return nil
+	return served, commands
 }
 
-func FsmOnDoorTimeout(elevator *Elevator, timer *DoorTimer) []elevio.ButtonEvent {
-	fmt.Printf("\n\nFsmOnDoorTimeout()\n")
+// FsmOnDoorClose is called when the door-close event arrives from the door module.
+func FsmOnDoorClose(elevator *Elevator) ([]elevio.ButtonEvent, []ElevatorCommand) {
+	fmt.Printf("\n\nFsmOnDoorClose()\n")
 	ElevatorPrint(elevator)
-
-	if elevator.ObstructionActive {
-		timer.Start(elevator.Config.DoorOpenDuration)
-		return nil
-	}
 
 	switch elevator.Behaviour {
 	case EB_DoorOpen:
-		elevio.SetDoorOpenLamp(false)
-		served := FsmActOnBehaviourPair(elevator, RequestsChooseDirection(elevator), timer)
+		served, commands := FsmActOnBehaviourPair(elevator, RequestsChooseDirection(elevator))
 		fmt.Println("\nNew state:")
 		ElevatorPrint(elevator)
-		return served
+		return served, commands
 
 	default:
 		fmt.Printf("DEBUG: Doors not open, no action\n")
@@ -121,5 +142,5 @@ func FsmOnDoorTimeout(elevator *Elevator, timer *DoorTimer) []elevio.ButtonEvent
 
 	fmt.Println("\nNew state:")
 	ElevatorPrint(elevator)
-	return nil
+	return nil, nil
 }
