@@ -20,40 +20,6 @@ type HRAElevState struct {
 type HRAInput struct {
 	HallRequests [][2]bool               `json:"hallRequests"`
 	States       map[string]HRAElevState `json:"states"`
-} {
-
-	activeElevators := make(map[string]bool)
-
-	for {
-		select {
-		case peerUpdate := <-peerUpdateToManagerChan:
-			for _, lostID := range peerUpdate.Lost {
-				delete(activeElevators, lostID)
-			}
-			for _, peerID := range peerUpdate.Peers {
-				activeElevators[peerID] = true
-			}
-
-		case snapshot := <-snapshotChan:
-			consensusHallRequests := hallRequestToHRAInput(snapshot)
-
-			select {
-			case hallLightsChan <- consensusHallRequests:
-			default:
-			}
-
-			hraInput := HRAInput{
-				HallRequests: consensusHallRequests,
-				States:       extractActiveElevatorStates(snapshot, activeElevators),
-			}
-
-			delegatedHallRequests := OutputHallRequestAssigner(hraInput)
-			designatedHallRequests := extractDesignatedHallRequests(delegatedHallRequests, id)
-			if designatedHallRequests != nil {
-				hallRequestChan <- designatedHallRequests
-			}
-		}
-	}
 }
 
 func OutputHallRequestAssigner(input HRAInput) map[string][][2]bool {
@@ -76,7 +42,7 @@ func OutputHallRequestAssigner(input HRAInput) map[string][][2]bool {
 		return nil
 	}
 
-	ret, err := exec.Command("./hall_request_assigner/"+hraExecutable, "-i", string(jsonBytes)).CombinedOutput()
+	ret, err := exec.Command("./manager/hall_request_assigner/"+hraExecutable, "-i", string(jsonBytes)).CombinedOutput()
 	if err != nil {
 		fmt.Println("exec.Command error: ", err)
 		fmt.Println(string(ret))

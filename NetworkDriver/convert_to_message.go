@@ -2,6 +2,8 @@ package networkdriver
 
 import (
 	elevatorcontroller "Heislab/ElevatorController"
+	"Heislab/Network/network/peers"
+	"Heislab/driver-go/elevio"
 )
 
 type RequestState uint8
@@ -18,6 +20,7 @@ type ElevatorState struct {
 	Floor       int            `json:"floor"`
 	Direction   string         `json:"direction"`
 	CabRequests []RequestState `json:"cabRequests"`
+	DoorOpen    bool           `json:"doorOpen"`
 }
 
 type NetworkSnapshot struct {
@@ -25,6 +28,27 @@ type NetworkSnapshot struct {
 	HallRequests map[string][][2]RequestState `json:"hallRequests"`
 	Elevators    map[string]ElevatorState     `json:"states"`
 	Iter         uint64                       `json:"iter"`
+}
+
+// HallUpIdx and HallDownIdx are the array indices for the two-element button
+// axis in [][2]RequestState. They mirror elevatorcontroller.HallUp/HallDown.
+const (
+	HallUpIdx   = elevatorcontroller.HallUp   // = 0
+	HallDownIdx = elevatorcontroller.HallDown // = 1
+)
+
+// NetworkNodeIn groups all channels that deliver events into RunNetworkNode.
+type NetworkNodeIn struct {
+	HallButton    <-chan elevio.ButtonEvent          // local hall button presses
+	ElevatorState <-chan elevatorcontroller.Elevator // local elevator FSM state
+	ServedHall    <-chan elevio.ButtonEvent           // served hall requests to clear
+}
+
+// NetworkNodeOut groups all channels that RunNetworkNode writes into.
+type NetworkNodeOut struct {
+	Snapshot   chan<- NetworkSnapshot  // consensus state → RunManager
+	PeerUpdate chan<- peers.PeerUpdate // peer list changes → RunManager
+	Init       chan<- struct{}         // safe-to-start signal → RunElevator
 }
 
 func LocalElevatorToElevatorState(elevator elevatorcontroller.Elevator) ElevatorState {
@@ -37,6 +61,7 @@ func LocalElevatorToElevatorState(elevator elevatorcontroller.Elevator) Elevator
 		Floor:       elevator.Floor,
 		Direction:   elevatorcontroller.DirnToString(elevator.Direction),
 		CabRequests: cabs,
+		DoorOpen:    elevator.Behaviour == elevatorcontroller.EB_DoorOpen,
 	}
 }
 
@@ -44,8 +69,8 @@ func HallRequestsToRequestStates(halls [][]bool) [][2]RequestState {
 	result := make([][2]RequestState, len(halls))
 	for i, floor := range halls {
 		result[i] = [2]RequestState{
-			boolToRequestState(floor[0]),
-			boolToRequestState(floor[1]),
+			HallUpIdx:   boolToRequestState(floor[HallUpIdx]),
+			HallDownIdx: boolToRequestState(floor[HallDownIdx]),
 		}
 	}
 	return result

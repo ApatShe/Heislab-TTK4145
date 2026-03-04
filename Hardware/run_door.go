@@ -1,78 +1,103 @@
 package door
 
-func RunDoor(
-	obstructionChan <-chan bool,
-	doorTimeoutChan <-chan int,
-	doorRequestChan <-chan int,
-	doorCloseChan chan<- int,
-	doorLampChan chan<- bool,
-	resetDoorTimerChan chan<- int,
-	resetObstructionWatchdogChan chan<- int,
-	stopObstructionWatchdogChan chan<- int,
-	obstructionInit bool,
-) {
-	wantOpen := false
-	doorOpen := false
-	obstructed := obstructionInit
-	timerActive := false
+// DoorIn groups all channels that deliver events into RunDoor.
+type DoorIn struct {
+	Obstruction          <-chan bool     // hardware obstruction sensor state
+	TimerExpired         <-chan struct{} // door-open timer has fired
+	OpenRequest          <-chan struct{} // elevator FSM requests the door to open
+	NetworkDoorOpenState <-chan bool     // door-open state restored from network snapshot on startup
+}
 
-	shouldOpenDoor := func() bool {
-		return wantOpen
+// DoorOut groups all channels that RunDoor writes into.
+type DoorOut struct {
+	Closed                   chan<- struct{} // notifies elevator FSM that door has closed
+	Lamp                     chan<- bool     // drives the door-open indicator lamp
+	ResetTimer               chan<- struct{} // arms/re-arms the door-open timer
+	ResetObstructionWatchdog chan<- struct{} // keeps obstruction watchdog alive while obstructed
+	StopObstructionWatchdog  chan<- struct{} // disarms obstruction watchdog when clear
+}
+
+func RunDoor(in DoorIn, out DoorOut, obstructionInit bool) {
+	openRequested := false
+	doorIsOpen := false
+	isObstructed := obstructionInit
+	timerIsRunning := false
+
+	// The four predicates below encapsulate every branch of the door state
+	// machine. They are named as questions so the switch reads as plain English.
+
+	doorOpenRequestPending := func() bool {
+		return openRequested
 	}
 
-	shouldKeepDoorOpen := func() bool {
-		return !wantOpen && obstructed && doorOpen
+	obstructionIsKeepingDoorOpen := func() bool {
+		return !openRequested && isObstructed && doorIsOpen
 	}
 
-	shouldWaitForTimer := func() bool {
-		return !wantOpen && !obstructed && doorOpen && timerActive
+	waitingForTimerToExpire := func() bool {
+		return !openRequested && !isObstructed && doorIsOpen && timerIsRunning
 	}
 
-	shouldCloseDoor := func() bool {
-		return !wantOpen && !obstructed && doorOpen && !timerActive
+	doorIsReadyToClose := func() bool {
+		return !openRequested && !isObstructed && doorIsOpen && !timerIsRunning
 	}
 
 	updateDoor := func() {
 		switch {
-		case shouldOpenDoor():
-			if !doorOpen {
-				doorOpen = true
-				doorLampChan <- true
+		case doorOpenRequestPending():
+			// Consume the one-shot request immediately so subsequent obstruction
+			// events fall through to obstructionIsKeepingDoorOpen() rather than
+			// looping back here and re-arming the timer indefinitely.
+			openRequested = false
+			if !doorIsOpen {
+				doorIsOpen = true
+				out.Lamp <- true
 			}
-			resetDoorTimerChan <- 1
-			timerActive = true
+			out.ResetTimer <- struct{}{}
+			timerIsRunning = true
 
-		case shouldKeepDoorOpen():
-			resetDoorTimerChan <- 1
-			timerActive = true
-			resetObstructionWatchdogChan <- 1
+		case obstructionIsKeepingDoorOpen():
+			out.ResetTimer <- struct{}{}
+			timerIsRunning = true
+			out.ResetObstructionWatchdog <- struct{}{}
 
-		case shouldWaitForTimer():
-			// timer still running — wait for doorTimeoutChan
+		case waitingForTimerToExpire():
+			// Timer still running — nothing to do until TimerExpired fires.
 
-		case shouldCloseDoor():
-			doorOpen = false
-			doorLampChan <- false
-			doorCloseChan <- 1
+		case doorIsReadyToClose():
+			doorIsOpen = false
+			out.Lamp <- false
+			out.Closed <- struct{}{}
 		}
 	}
 
 	for {
 		select {
-		case req := <-doorRequestChan:
-			wantOpen = req == 1
+		case wasOpen := <-in.NetworkDoorOpenState:
+			// One-shot: restore door-open state from the peer snapshot on startup.
+			// Nil the channel so this case is never selected again.
+			in.NetworkDoorOpenState = nil
+			if wasOpen {
+				openRequested = true
+				updateDoor()
+			}
+
+		case <-in.OpenRequest:
+			openRequested = true
 			updateDoor()
 
-		case obs := <-obstructionChan:
-			obstructed = obs
-			if !obstructed {
-				stopObstructionWatchdogChan <- 1
+		case obs := <-in.Obstruction:
+			isObstructed = obs
+			if !isObstructed {
+				out.StopObstructionWatchdog <- struct{}{}
 			}
 			updateDoor()
 
-		case <-doorTimeoutChan:
-			timerActive = false
-			wantOpen = false
+		case <-in.TimerExpired:
+			timerIsRunning = false
+			// openRequested is cleared the moment doorOpenRequestPending() fires,
+			// so this guard is a safety net only.
+			openRequested = false
 			updateDoor()
 		}
 	}

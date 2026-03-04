@@ -109,6 +109,7 @@ func mergePeerElevator(local, received NetworkSnapshot) ElevatorState {
 		Behaviour: receivedNodeState.Behaviour,
 		Floor:     receivedNodeState.Floor,
 		Direction: receivedNodeState.Direction,
+		DoorOpen:  receivedNodeState.DoorOpen,
 		CabRequests: mergeCabRequests(
 			local.Elevators[received.NodeID].CabRequests, // our stored copy of this peer's cabs
 			receivedNodeState.CabRequests,
@@ -184,22 +185,6 @@ func allPeersHaveRequested(snapshot NetworkSnapshot, activePeerIDs []string, flo
 	return true
 }
 
-// withUnknownsFlippedToInactive returns a copy of reqs where every UNKNOWN
-// entry has been replaced with INACTIVE. Used when a node first appears on
-// the peer list and can safely assume it has no pending hall requests.
-func withUnknownsFlippedToInactive(reqs [][2]RequestState) [][2]RequestState {
-	result := make([][2]RequestState, len(reqs))
-	copy(result, reqs)
-	for floorIndex := range result {
-		for buttonIndex := range result[floorIndex] {
-			if result[floorIndex][buttonIndex] == UNKNOWN {
-				result[floorIndex][buttonIndex] = INACTIVE
-			}
-		}
-	}
-	return result
-}
-
 // AdvanceToActive promotes hall requests from REQUESTED to ACTIVE for every
 // floor/button where all active peers have reached at least REQUESTED.
 // This is the consensus promotion step: a confirmed request the HRA will act on.
@@ -209,9 +194,8 @@ func AdvanceToActive(snapshot NetworkSnapshot, activePeerIDs []string) NetworkSn
 		return snapshot
 	}
 	for floorIndex := 0; floorIndex < len(ownRequests); floorIndex++ {
-		for buttonIndex := 0; buttonIndex < 2; buttonIndex++ {
-			isAlreadyActive := ownRequests[floorIndex][buttonIndex] == ACTIVE
-			if isAlreadyActive {
+		for _, buttonIndex := range []int{HallUpIdx, HallDownIdx} {
+			if ownRequests[floorIndex][buttonIndex] == ACTIVE {
 				continue
 			}
 			if allPeersHaveRequested(snapshot, activePeerIDs, floorIndex, buttonIndex) {

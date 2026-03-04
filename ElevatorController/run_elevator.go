@@ -8,100 +8,93 @@ import (
 // RunElevator runs the elevator finite state machine.
 //
 // Two distinct order paths:
-//   - cabOrderChan  — cab button events arriving directly from hardware polling.
-//   - hallRequestChan — full hall-request matrix pushed by the manager after the
-//     HRA has run and the network has reached consensus.
+//   - in.CabButton  — cab button events arriving directly from hardware polling.
+//   - in.HallRequests — full hall-request matrix pushed by the manager after
+//     the HRA has run and the network has reached consensus.
 //
-// Hall button presses are never sent here directly; they travel:
+// Hall button presses never arrive here directly; they travel:
 //
 //	button → RunNetworkNode → manager/HRA → network broadcast → consensus
-//	→ manager pushes [][2]bool matrix → hallRequestChan → here.
-func RunElevator(
-	floorChan <-chan int,
-	cabOrderChan <-chan elevio.ButtonEvent,
-	hallRequestChan <-chan [][2]bool,
-	doorCloseChan <-chan int,
-	doorRequestChan chan<- int,
-	lightsElevatorStateChan chan<- Elevator,
-	elevatorStateChan chan<- Elevator,
-	resetMotorWatchdogTimerChan chan<- int,
-	initChan <-chan int,
-) {
-	// Block until NetworkNode signals peer state has been recovered.
+//	→ manager pushes [][2]bool matrix → in.HallRequests → here.
+func RunElevator(in ElevatorIn, out ElevatorOut) {
+	// Block until NetworkNode signals that peer state has been recovered.
 	// This prevents the motor from starting before cab requests are known.
-	<-initChan
+	<-in.Init
 
 	elevator := ElevatorUninitialized()
-	// Start motor down if between floors; arm watchdog to detect a stall.
 	if elevio.GetFloor() == -1 {
 		elevio.SetMotorDirection(elevio.MD_Down)
 		elevator.Direction = elevio.MD_Down
 		elevator.Behaviour = EB_Moving
-		resetMotorWatchdogTimerChan <- 1
+		out.ResetMotorTimer <- struct{}{}
 	}
 
-	broadcast := func() {
+	broadcastState := func() {
 		select {
-		case elevatorStateChan <- *elevator:
+		case out.NetworkState <- *elevator:
 		default:
 		}
 		select {
-		case lightsElevatorStateChan <- *elevator:
+		case out.LightsState <- *elevator:
 		default:
+		}
+	}
+
+	reportServedHallRequests := func(served []elevio.ButtonEvent) {
+		for _, btn := range served {
+			isHallButton := btn.Button == elevio.BT_HallUp || btn.Button == elevio.BT_HallDown
+			if isHallButton {
+				select {
+				case out.ServedHall <- btn:
+				default:
+				}
+			}
 		}
 	}
 
 	fmt.Println("Elevator controller started!")
 
 	for {
+		var served []elevio.ButtonEvent
 		var commands []ElevatorCommand
 
 		select {
-		case btn := <-cabOrderChan:
-			// Cab requests are local — handle immediately.
+		case btn := <-in.CabButton:
 			fmt.Printf("Cab button: Floor=%d\n", btn.Floor)
-			_, commands = FsmOnCabRequest(elevator, btn.Floor)
+			served, commands = FsmOnCabRequest(elevator, btn.Floor)
 
-		case newHallRequests := <-hallRequestChan:
-			// Hall-request matrix assigned by manager after HRA + network consensus.
+		case newHallRequests := <-in.HallRequests:
 			fmt.Printf("Hall request update from manager\n")
-			_, commands = FsmOnHallRequestsUpdate(elevator, newHallRequests)
+			served, commands = FsmOnHallRequestsUpdate(elevator, newHallRequests)
 
-		case floor := <-floorChan:
-			_, commands = FsmOnFloorArrival(elevator, floor)
+		case floor := <-in.Floor:
+			served, commands = FsmOnFloorArrival(elevator, floor)
 
-		case <-doorCloseChan:
-			_, commands = FsmOnDoorClose(elevator)
+		case <-in.DoorClosed:
+			served, commands = FsmOnDoorClose(elevator)
 
+		case <-in.MotorStall:
+			// Motor stall detected — stop motor and return to idle.
+			// The HRA will re-assign requests once the elevator broadcasts
+			// its new idle state.
+			fmt.Println("Motor watchdog: stall detected, stopping motor")
+			elevator.Direction = elevio.MD_Stop
+			elevator.Behaviour = EB_Idle
+			elevio.SetMotorDirection(elevio.MD_Stop)
+			select {
+			case out.StopMotorTimer <- struct{}{}:
+			default:
+			}
 		}
 
-		executeCommands(commands, doorRequestChan, resetMotorWatchdogTimerChan)
-		broadcast()
+		reportServedHallRequests(served)
+		executeCommands(commands, out)
+		broadcastState()
 	}
 }
 
-// executeCommands sends the hardware actions produced by the FSM to their
-// respective drivers. Motor-timer resets/stops are side effects of
-// CmdSetMotorDirection and CmdSetFloorIndicator — not separate command types.
-func executeCommands(
-	commands []ElevatorCommand,
-	doorRequestChan chan<- int,
-	resetMotorWatchdogTimerChan chan<- int,
-) {
+func executeCommands(commands []ElevatorCommand, out ElevatorOut) {
 	for _, cmd := range commands {
-		switch cmd.Type {
-		case CmdSetMotorDirection:
-			dir := cmd.Value.(elevio.MotorDirection)
-			elevio.SetMotorDirection(dir)
-			if dir != elevio.MD_Stop {
-				resetMotorWatchdogTimerChan <- 1
-			}
-
-		case CmdSetFloorIndicator:
-			elevio.SetFloorIndicator(cmd.Value.(int))
-
-		case CmdDoorRequest:
-			doorRequestChan <- 1
-		}
+		cmd.execute(out)
 	}
 }

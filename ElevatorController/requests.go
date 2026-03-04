@@ -9,7 +9,7 @@ type DirnBehaviourPair struct {
 
 func RequestsAbove(elevator *Elevator) bool {
 	for f := elevator.Floor + 1; f < NumFloors; f++ {
-		if elevator.HallRequests[f][0] || elevator.HallRequests[f][1] || elevator.CabRequests[f] {
+		if elevator.HallRequests[f][HallUp] || elevator.HallRequests[f][HallDown] || elevator.CabRequests[f] {
 			return true
 		}
 	}
@@ -18,7 +18,7 @@ func RequestsAbove(elevator *Elevator) bool {
 
 func RequestsBelow(elevator *Elevator) bool {
 	for f := 0; f < elevator.Floor; f++ {
-		if elevator.HallRequests[f][0] || elevator.HallRequests[f][1] || elevator.CabRequests[f] {
+		if elevator.HallRequests[f][HallUp] || elevator.HallRequests[f][HallDown] || elevator.CabRequests[f] {
 			return true
 		}
 	}
@@ -28,24 +28,24 @@ func RequestsBelow(elevator *Elevator) bool {
 func RequestsHere(elevator *Elevator) bool {
 	switch elevator.Direction {
 	case elevio.MD_Up:
-		return elevator.HallRequests[elevator.Floor][0] || elevator.CabRequests[elevator.Floor]
+		return elevator.HallRequests[elevator.Floor][HallUp] || elevator.CabRequests[elevator.Floor]
 	case elevio.MD_Down:
-		return elevator.HallRequests[elevator.Floor][1] || elevator.CabRequests[elevator.Floor]
+		return elevator.HallRequests[elevator.Floor][HallDown] || elevator.CabRequests[elevator.Floor]
 	default:
-		return elevator.HallRequests[elevator.Floor][0] || elevator.HallRequests[elevator.Floor][1] || elevator.CabRequests[elevator.Floor]
+		return elevator.HallRequests[elevator.Floor][HallUp] || elevator.HallRequests[elevator.Floor][HallDown] || elevator.CabRequests[elevator.Floor]
 	}
 }
 
 func RequestsShouldStop(elevator *Elevator) bool {
 	switch elevator.Direction {
 	case elevio.MD_Down:
-		return elevator.HallRequests[elevator.Floor][1] ||
+		return elevator.HallRequests[elevator.Floor][HallDown] ||
 			elevator.CabRequests[elevator.Floor] ||
-			(elevator.HallRequests[elevator.Floor][0] && !RequestsBelow(elevator))
+			(elevator.HallRequests[elevator.Floor][HallUp] && !RequestsBelow(elevator))
 	case elevio.MD_Up:
-		return elevator.HallRequests[elevator.Floor][0] ||
+		return elevator.HallRequests[elevator.Floor][HallUp] ||
 			elevator.CabRequests[elevator.Floor] ||
-			(elevator.HallRequests[elevator.Floor][1] && !RequestsAbove(elevator))
+			(elevator.HallRequests[elevator.Floor][HallDown] && !RequestsAbove(elevator))
 	default:
 		return true
 	}
@@ -74,30 +74,30 @@ func RequestsClearAtCurrentFloor(elevator *Elevator) []elevio.ButtonEvent {
 
 	switch elevator.Direction {
 	case elevio.MD_Up:
-		if elevator.HallRequests[elevator.Floor][0] {
-			elevator.HallRequests[elevator.Floor][0] = false
+		if elevator.HallRequests[elevator.Floor][HallUp] {
+			elevator.HallRequests[elevator.Floor][HallUp] = false
 			served = append(served, elevio.ButtonEvent{Floor: elevator.Floor, Button: elevio.BT_HallUp})
 		}
-		if !RequestsAbove(elevator) && elevator.HallRequests[elevator.Floor][1] {
-			elevator.HallRequests[elevator.Floor][1] = false
+		if !RequestsAbove(elevator) && elevator.HallRequests[elevator.Floor][HallDown] {
+			elevator.HallRequests[elevator.Floor][HallDown] = false
 			served = append(served, elevio.ButtonEvent{Floor: elevator.Floor, Button: elevio.BT_HallDown})
 		}
 	case elevio.MD_Down:
-		if elevator.HallRequests[elevator.Floor][1] {
-			elevator.HallRequests[elevator.Floor][1] = false
+		if elevator.HallRequests[elevator.Floor][HallDown] {
+			elevator.HallRequests[elevator.Floor][HallDown] = false
 			served = append(served, elevio.ButtonEvent{Floor: elevator.Floor, Button: elevio.BT_HallDown})
 		}
-		if !RequestsBelow(elevator) && elevator.HallRequests[elevator.Floor][0] {
-			elevator.HallRequests[elevator.Floor][0] = false
+		if !RequestsBelow(elevator) && elevator.HallRequests[elevator.Floor][HallUp] {
+			elevator.HallRequests[elevator.Floor][HallUp] = false
 			served = append(served, elevio.ButtonEvent{Floor: elevator.Floor, Button: elevio.BT_HallUp})
 		}
 	default:
-		if elevator.HallRequests[elevator.Floor][0] {
-			elevator.HallRequests[elevator.Floor][0] = false
+		if elevator.HallRequests[elevator.Floor][HallUp] {
+			elevator.HallRequests[elevator.Floor][HallUp] = false
 			served = append(served, elevio.ButtonEvent{Floor: elevator.Floor, Button: elevio.BT_HallUp})
 		}
-		if elevator.HallRequests[elevator.Floor][1] {
-			elevator.HallRequests[elevator.Floor][1] = false
+		if elevator.HallRequests[elevator.Floor][HallDown] {
+			elevator.HallRequests[elevator.Floor][HallDown] = false
 			served = append(served, elevio.ButtonEvent{Floor: elevator.Floor, Button: elevio.BT_HallDown})
 		}
 	}
@@ -108,8 +108,8 @@ func RequestsClearAtCurrentFloor(elevator *Elevator) []elevio.ButtonEvent {
 // replaceHallRequests writes the Manager-assigned hall matrix into the elevator.
 func replaceHallRequests(elevator *Elevator, newRequests [][2]bool) {
 	for f := 0; f < NumFloors; f++ {
-		elevator.HallRequests[f][0] = newRequests[f][0]
-		elevator.HallRequests[f][1] = newRequests[f][1]
+		elevator.HallRequests[f][HallUp] = newRequests[f][HallUp]
+		elevator.HallRequests[f][HallDown] = newRequests[f][HallDown]
 	}
 }
 

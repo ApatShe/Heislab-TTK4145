@@ -6,6 +6,19 @@ import (
 	networkdriver "Heislab/NetworkDriver"
 )
 
+// ManagerIn groups all channels that deliver events into RunManager.
+type ManagerIn struct {
+	Snapshot   <-chan networkdriver.NetworkSnapshot // consensus snapshot from network node
+	PeerUpdate <-chan peers.PeerUpdate              // peer list changes from network node
+}
+
+// ManagerOut groups all channels that RunManager writes into.
+type ManagerOut struct {
+	HallRequests chan<- [][2]bool // HRA-assigned matrix → elevator
+	HallLights   chan<- [][2]bool // HRA-assigned matrix → lights
+	DoorInit     chan<- bool      // persistent door state → door module on first snapshot
+}
+
 func hallRequestToHRAInput(snapshot networkdriver.NetworkSnapshot) [][2]bool {
 	hraInput := make([][2]bool, elevatorcontroller.NumFloors)
 	// HallRequests is map[nodeID][][2]RequestState — iterate over node entries,
@@ -13,8 +26,8 @@ func hallRequestToHRAInput(snapshot networkdriver.NetworkSnapshot) [][2]bool {
 	// any node has it as ACTIVE.
 	for _, nodeRequests := range snapshot.HallRequests {
 		for floor, btnPair := range nodeRequests {
-			hraInput[floor][0] = hraInput[floor][0] || networkdriver.RequestStateToBool(btnPair[0])
-			hraInput[floor][1] = hraInput[floor][1] || networkdriver.RequestStateToBool(btnPair[1])
+			hraInput[floor][elevatorcontroller.HallUp] = hraInput[floor][elevatorcontroller.HallUp] || networkdriver.RequestStateToBool(btnPair[networkdriver.HallUpIdx])
+			hraInput[floor][elevatorcontroller.HallDown] = hraInput[floor][elevatorcontroller.HallDown] || networkdriver.RequestStateToBool(btnPair[networkdriver.HallDownIdx])
 		}
 	}
 	return hraInput
@@ -47,19 +60,13 @@ func extractDesignatedHallRequests(delegatedHallRequests map[string][][2]bool, i
 	return delegatedHallRequests[id]
 }
 
-func RunManager(
-	snapshotChan <-chan networkdriver.NetworkSnapshot,
-	peerUpdateToManagerChan <-chan peers.PeerUpdate,
-
-	hallRequestChan chan<- [][2]bool,
-	hallLightsChan chan<- [][2]bool,
-	id string,
-) {
-	activeElevators := make(map[string]bool)
+func RunManager(in ManagerIn, out ManagerOut, id string) {
+	activeElevators := map[string]bool{id: true} // always treat self as active
+	doorInitSent := false
 
 	for {
 		select {
-		case peerUpdate := <-peerUpdateToManagerChan:
+		case peerUpdate := <-in.PeerUpdate:
 			for _, lostID := range peerUpdate.Lost {
 				delete(activeElevators, lostID)
 			}
@@ -67,11 +74,22 @@ func RunManager(
 				activeElevators[peerID] = true
 			}
 
-		case snapshot := <-snapshotChan:
+		case snapshot := <-in.Snapshot:
+			// On the very first snapshot, restore door state to the door module.
+			if !doorInitSent {
+				doorInitSent = true
+				if ownState, ok := snapshot.Elevators[id]; ok {
+					select {
+					case out.DoorInit <- ownState.DoorOpen:
+					default:
+					}
+				}
+			}
+
 			consensusHallRequests := hallRequestToHRAInput(snapshot)
 
 			select {
-			case hallLightsChan <- consensusHallRequests:
+			case out.HallLights <- consensusHallRequests:
 			default:
 			}
 
@@ -80,10 +98,17 @@ func RunManager(
 				States:       extractActiveElevatorStates(snapshot, activeElevators),
 			}
 
+			if len(hraInput.States) == 0 {
+				break
+			}
+
 			delegatedHallRequests := OutputHallRequestAssigner(hraInput)
 			designatedHallRequests := extractDesignatedHallRequests(delegatedHallRequests, id)
 			if designatedHallRequests != nil {
-				hallRequestChan <- designatedHallRequests
+				select {
+				case out.HallRequests <- designatedHallRequests:
+				default:
+				}
 			}
 		}
 	}

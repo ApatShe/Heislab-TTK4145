@@ -7,6 +7,7 @@ import (
 	"Heislab/Network/network/peers"
 	networkdriver "Heislab/NetworkDriver"
 	"Heislab/driver-go/elevio"
+	"Heislab/lights"
 	"Heislab/manager"
 	"Heislab/timer"
 	"flag"
@@ -15,39 +16,6 @@ import (
 	"time"
 )
 
-// Problems arising during FAT and other testing
-// - How to test disconnect :sad
-//   we make at home version
-
-// TODO: Final todo list before FAT:
-// - Convert door into its own process ✓
-// - Fully implement obstruction switch and motor blockage timers ✓
-// - Change elevator state sending from continuous to diff ✓
-// - Change peer list sending from continuous to diff ✓
-// - Implement virtual state for pending requests ✓
-// - Fix the request assigner ✓
-// - Do a *lot* more testing with packet loss, both working and not working
-// - Make the hardwareCommands solution cleaner [?]
-// - Gather everything into one repo ✓
-// - Review the structure of elevalgo ✓
-// - Read the project spec completely, and verify that everything works
-// - Do test FAT
-
-// A problem with packet loss:
-// -----------------------------
-// If there is high packet loss and an elevator disconnects, the other two elevators
-// may take requests which haven't been fully acked. This can happen if elevator 1
-// takes a request while elevator 3 is "disconnected", elevator 1 then detects that
-// only elevator 2 needs to ack, which happens, and then elevator 1 takes the request
-// with only an ack from elevator 2. If elevator 2 then dies, the request has not been
-// backed up
-// One reason why this may potentially not be such a huge problem is that
-// each elevator broadcasts its state either way, so there is a large chance
-// that elevator 3 will pick up that elevator 1 is taking the request anyways, and then
-// if elevator 1 dies, elevator 3 can take over / back up the request
-
-// But in general packet loss will ravage our elevator system
-// :DD
 func main() {
 
 	const (
@@ -60,9 +28,9 @@ func main() {
 	var port int
 	flag.IntVar(&port, "port", defaultElevatorPort, "Simulator TCP port")
 
-	// id uniquely identifies this node on the network.
-	// Defaults to local IP so physical machines are automatically distinct.
-	// Override with --id when running multiple instances on the same machine.
+	// id uniquely identifies this node on the network. Defaults to local IP so
+	// physical machines are automatically distinct. Override with --id when
+	// running multiple instances on the same machine.
 	localIP, err := localip.LocalIP()
 	if err != nil {
 		panic(fmt.Sprintf("could not resolve local IP: %v", err))
@@ -73,15 +41,12 @@ func main() {
 	flag.Parse()
 	fmt.Printf("Starting node id=%s port=%d\n", id, port)
 
-	// // ---- Initialize elevator ----
+	// ---- Initialize elevator IO ----
 	elevio.Init("localhost:"+strconv.Itoa(port), elevatorcontroller.NumFloors)
-	//elevatorcontroller.InitFsm()
-	// InitBetweenFloors is deferred until RunElevator receives from initChan
-	// (after peer state is recovered). We still need the config values now.
 	initElevator := *elevatorcontroller.ElevatorUninitialized()
 	doorOpenDuration := initElevator.Config.DoorOpenDuration
 
-	// ---- Initialize hardware communication ----
+	// ---- Hardware event channels ----
 	buttonEventChan := make(chan elevio.ButtonEvent, 1)
 	floorChan := make(chan int)
 	obstructionChan := make(chan bool)
@@ -90,45 +55,48 @@ func main() {
 	go elevio.PollFloorSensor(floorChan)
 	go elevio.PollObstructionSwitch(obstructionChan)
 
-	obstructionInit := <-obstructionChan
+	// Don't block — default to no obstruction if switch hasn't fired yet
+	obstructionInit := false
+	select {
+	case obstructionInit = <-obstructionChan:
+	default:
+	}
 
-	// ---- Initialize timers ----
-	// Door timer
-	resetDoorTimerChan := make(chan int)
-	stopDoorTimerChan := make(chan int)
-	doorTimeoutChan := make(chan int)
-	go timer.RunTimer(resetDoorTimerChan, stopDoorTimerChan, doorTimeoutChan, doorOpenDuration, false, "Door Timer")
+	// ---- Timer signal channels (chan struct{} — receiving the signal IS the message) ----
+	resetDoorTimerChan := make(chan struct{})
+	stopDoorTimerChan := make(chan struct{})
+	doorTimerExpiredChan := make(chan struct{}, 1)
+	go timer.RunTimer(resetDoorTimerChan, stopDoorTimerChan, doorTimerExpiredChan, doorOpenDuration, false, "Door Timer")
 
-	// Obstruction timer
-	resetObstructionWatchdogTimerChan := make(chan int)
-	stopObstructionWatchdogTimerChan := make(chan int)
-	go timer.RunTimer(resetObstructionWatchdogTimerChan, stopObstructionWatchdogTimerChan, nil, obstructionTimeout, true, "Obstruction Watchdog")
+	resetObstructionWatchdogChan := make(chan struct{})
+	stopObstructionWatchdogChan := make(chan struct{})
+	go timer.RunTimer(resetObstructionWatchdogChan, stopObstructionWatchdogChan, nil, obstructionTimeout, true, "Obstruction Watchdog")
 
-	// Motor timer
-	resetMotorWatchdogTimerChan := make(chan int)
-	go timer.RunTimer(resetMotorWatchdogTimerChan, nil, nil, motorTimeout, true, "Motor Watchdog")
+	resetMotorWatchdogChan := make(chan struct{})
+	stopMotorWatchdogChan := make(chan struct{})
+	motorStallChan := make(chan struct{}, 1)
+	go timer.RunTimer(resetMotorWatchdogChan, stopMotorWatchdogChan, motorStallChan, motorTimeout, false, "Motor Watchdog")
 
-	// initChan: signals RunElevator that peer state has been recovered — safe to start motor.
-	initChan := make(chan int, 1)
+	// ---- Inter-goroutine channels ----
+	hallButtonChan := make(chan elevio.ButtonEvent, 1)             // hall presses  → network node
+	cabOrderChan := make(chan elevio.ButtonEvent, 1)               // cab presses   → elevator
+	hallRequestChan := make(chan [][2]bool, 1)                     // HRA matrix    → elevator
+	elevatorStateChan := make(chan elevatorcontroller.Elevator, 1) // FSM state     → network node
+	lightsStateChan := make(chan elevatorcontroller.Elevator, 1)   // FSM state     → lights
+	servedHallChan := make(chan elevio.ButtonEvent, 4)             // served halls  → network node
 
-	// ---- Networking node communication ----
-	// TODO: Try unbuffering some of these channels and see what happens
-	hallButtonChan := make(chan elevio.ButtonEvent, 1) // hall presses → network node → cyclic counter
-	cabOrderChan := make(chan elevio.ButtonEvent, 1)   // cab presses  → elevator directly
-	hallRequestChan := make(chan [][2]bool, 1)         // HRA matrix   → elevator
-	elevatorStateChan := make(chan elevatorcontroller.Elevator, 1)
-	snapshotChan := make(chan networkdriver.NetworkSnapshot, 1) // consensus snapshot → manager
-	peerUpdateToManagerChan := make(chan peers.PeerUpdate, 1)   // peer updates → manager
+	snapshotChan := make(chan networkdriver.NetworkSnapshot, 1) // consensus     → manager
+	peerUpdateChan := make(chan peers.PeerUpdate, 1)            // peer list     → manager
+	hallLightsChan := make(chan [][2]bool, 1)                   // HRA matrix    → lights
 
-	// ---- Door communication ----
-	doorRequestChan := make(chan int)
-	doorCloseChan   := make(chan int)
-	doorLampChan    := make(chan bool, 1)
+	doorOpenRequestChan := make(chan struct{}) // FSM → door module
+	doorClosedChan := make(chan struct{})      // door module → FSM
+	doorLampChan := make(chan bool, 1)         // door module → lights
+	doorInitChan := make(chan bool, 1)         // manager → door module (restart recovery)
 
-	// ---- Lights communication
-	lightsElevatorStateChan := make(chan elevatorcontroller.Elevator, 1)
-	hallLightsChan := make(chan [][2]bool, 1)
-	// ---- Button router: split raw hardware poll into cab (local) and hall (network) ----
+	initChan := make(chan struct{}, 1) // network node → elevator (safe to start)
+
+	// ---- Button router: split hardware poll into cab (local) and hall (network) ----
 	go func() {
 		for btn := range buttonEventChan {
 			if btn.Button == elevio.BT_Cab {
@@ -139,58 +107,76 @@ func main() {
 		}
 	}()
 
-	// ---- Disconnect ----
-	//disconnectChan := make(chan int, 1)
-
-	// ---- Spawn core threads: networking, elevator, door and lights ----
+	// ---- Spawn core goroutines ----
 	go networkdriver.RunNetworkNode(
-		hallButtonChan,
-		elevatorStateChan,
-		snapshotChan,
-		peerUpdateToManagerChan,
-		initChan,
+		networkdriver.NetworkNodeIn{
+			HallButton:    hallButtonChan,
+			ElevatorState: elevatorStateChan,
+			ServedHall:    servedHallChan,
+		},
+		networkdriver.NetworkNodeOut{
+			Snapshot:   snapshotChan,
+			PeerUpdate: peerUpdateChan,
+			Init:       initChan,
+		},
 		initElevator,
 		id,
 	)
 
 	go manager.RunManager(
-		snapshotChan,            // ← consensus snapshot after cyclic counter + AdvanceToActive
-		peerUpdateToManagerChan, // ← peer updates from network node
-		hallRequestChan,         // ← HRA-assigned [][2]bool matrix → elevator
-		hallLightsChan,          // ← HRA-assigned [][2]bool matrix → lights
+		manager.ManagerIn{
+			Snapshot:   snapshotChan,
+			PeerUpdate: peerUpdateChan,
+		},
+		manager.ManagerOut{
+			HallRequests: hallRequestChan,
+			HallLights:   hallLightsChan,
+			DoorInit:     doorInitChan,
+		},
 		id,
 	)
 
 	go elevatorcontroller.RunElevator(
-		floorChan,
-		cabOrderChan,
-		hallRequestChan,
-		doorCloseChan,
-		doorRequestChan,
-		lightsElevatorStateChan,
-		elevatorStateChan,
-		resetMotorWatchdogTimerChan,
-		initChan,
+		elevatorcontroller.ElevatorIn{
+			Floor:        floorChan,
+			CabButton:    cabOrderChan,
+			HallRequests: hallRequestChan,
+			DoorClosed:   doorClosedChan,
+			MotorStall:   motorStallChan,
+			Init:         initChan,
+		},
+		elevatorcontroller.ElevatorOut{
+			NetworkState:    elevatorStateChan,
+			LightsState:     lightsStateChan,
+			ServedHall:      servedHallChan,
+			DoorOpen:        doorOpenRequestChan,
+			ResetMotorTimer: resetMotorWatchdogChan,
+			StopMotorTimer:  stopMotorWatchdogChan,
+		},
 	)
 
 	go door.RunDoor(
-		obstructionChan,
-		doorTimeoutChan,
-		doorRequestChan,
-		doorCloseChan,
-		doorLampChan,
-		resetDoorTimerChan,
-		resetObstructionWatchdogTimerChan,
-		stopObstructionWatchdogTimerChan,
+		door.DoorIn{
+			Obstruction:          obstructionChan,
+			TimerExpired:         doorTimerExpiredChan,
+			OpenRequest:          doorOpenRequestChan,
+			NetworkDoorOpenState: doorInitChan,
+		},
+		door.DoorOut{
+			Closed:                   doorClosedChan,
+			Lamp:                     doorLampChan,
+			ResetTimer:               resetDoorTimerChan,
+			ResetObstructionWatchdog: resetObstructionWatchdogChan,
+			StopObstructionWatchdog:  stopObstructionWatchdogChan,
+		},
 		obstructionInit,
 	)
 
-	go lights.RunLights(lightsElevatorStateChan, hallLightsChan, doorLampChan)
+	go lights.RunLights(lights.LightsIn{
+		ElevatorState: lightsStateChan,
+		HallRequests:  hallLightsChan,
+		DoorLamp:      doorLampChan,
+	})
 
-	//go disconnector.RunDisconnector(disconnectChan)
-
-	for {
-		time.Sleep(time.Second)
-	}
-
+	select {}
 }

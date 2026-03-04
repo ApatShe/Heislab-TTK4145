@@ -5,52 +5,59 @@ import (
 	"time"
 )
 
-type timer struct {
-	startTime time.Time
-	active    bool
-	timeout   time.Duration
-}
-
+// RunTimer is a general-purpose timer goroutine.
+//
+// It uses time.NewTimer internally — no busy-polling. A nil stopChan or
+// timeoutChan is valid: nil channels block forever in a select and are
+// therefore safely ignored.
+//
+// panicOnTimeout is kept for the obstruction watchdog (a door that will not
+// close is a hard failure). For the motor watchdog, pass panicOnTimeout=false
+// and a real timeoutChan so the stall can be handled gracefully.
 func RunTimer(
-	resetChan <-chan int,
-	stopChan <-chan int,
-	timeoutChan chan<- int,
+	resetChan <-chan struct{},
+	stopChan <-chan struct{},
+	timeoutChan chan<- struct{},
 	timeout time.Duration,
 	panicOnTimeout bool,
 	name string,
 ) {
-	timerInstance := newTimer(timeout)
+	t := time.NewTimer(timeout)
+	t.Stop()
+	drainTimer(t) // ensure channel is empty after Stop
 
 	for {
 		select {
 		case <-stopChan:
-			timerInstance.active = false
+			if !t.Stop() {
+				drainTimer(t)
+			}
+
 		case <-resetChan:
-			timerInstance.startTime = time.Now()
-			timerInstance.active = true
-		default:
-			if CheckTimeout(timerInstance) {
-				timerInstance.active = false
-				if panicOnTimeout {
-					panic(fmt.Sprintf("Panicking timer %s timed out", name))
-				}
-				if timeoutChan != nil {
-					timeoutChan <- 1
+			if !t.Stop() {
+				drainTimer(t)
+			}
+			t.Reset(timeout)
+
+		case <-t.C:
+			if panicOnTimeout {
+				panic(fmt.Sprintf("Timer %q timed out", name))
+			}
+			if timeoutChan != nil {
+				select {
+				case timeoutChan <- struct{}{}:
+				default:
 				}
 			}
-			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }
 
-func CheckTimeout(_timer timer) bool {
-	return _timer.active && time.Since(_timer.startTime) > _timer.timeout
-}
-
-func newTimer(timeout time.Duration) timer {
-	return timer{
-		startTime: time.Now(),
-		active:    false,
-		timeout:   timeout,
+// drainTimer safely empties the timer channel after a Stop() that may have
+// already fired. Must only be called when the timer goroutine is not running.
+func drainTimer(t *time.Timer) {
+	select {
+	case <-t.C:
+	default:
 	}
 }

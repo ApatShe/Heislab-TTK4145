@@ -14,19 +14,19 @@ func FsmActOnBehaviourPair(elevator *Elevator, pair DirnBehaviourPair) ([]elevio
 
 	switch pair.Behaviour {
 	case EB_DoorOpen:
-		// Notify the door module to open the door and start its timer.
 		return RequestsClearAtCurrentFloor(elevator), []ElevatorCommand{
-			{Type: CmdDoorRequest},
+			CmdSetMotorDirectionCmd{Dir: elevio.MD_Stop}, // ← add this
+			CmdDoorRequestCmd{},
 		}
 
 	case EB_Moving:
 		return nil, []ElevatorCommand{
-			{Type: CmdSetMotorDirection, Value: elevator.Direction},
+			CmdSetMotorDirectionCmd{Dir: elevator.Direction},
 		}
 
 	case EB_Idle:
 		return nil, []ElevatorCommand{
-			{Type: CmdSetMotorDirection, Value: elevio.MD_Stop},
+			CmdSetMotorDirectionCmd{Dir: elevio.MD_Stop},
 		}
 	}
 
@@ -48,7 +48,7 @@ func FsmOnCabRequest(elevator *Elevator, btnFloor int) ([]elevio.ButtonEvent, []
 	case EB_DoorOpen:
 		if CabRequestShouldClearImmediately(elevator, btnFloor) {
 			// Already at this floor with doors open — restart door timer.
-			commands = append(commands, ElevatorCommand{Type: CmdDoorRequest})
+			commands = append(commands, CmdDoorRequestCmd{})
 		} else {
 			elevator.CabRequests[btnFloor] = true
 		}
@@ -93,7 +93,7 @@ func FsmOnFloorArrival(elevator *Elevator, newFloor int) ([]elevio.ButtonEvent, 
 
 	elevator.Floor = newFloor
 	commands := []ElevatorCommand{
-		{Type: CmdSetFloorIndicator, Value: newFloor},
+		CmdSetFloorIndicatorCmd{Floor: newFloor},
 	}
 
 	var served []elevio.ButtonEvent
@@ -102,11 +102,9 @@ func FsmOnFloorArrival(elevator *Elevator, newFloor int) ([]elevio.ButtonEvent, 
 	case EB_Moving:
 		if HasNoRequests(elevator) {
 			// Initialisation complete, no pending requests — go idle.
-			elevator.Behaviour = EB_Idle
-			elevator.Direction = elevio.MD_Stop
-			commands = append(commands,
-				ElevatorCommand{Type: CmdSetMotorDirection, Value: elevio.MD_Stop},
-			)
+			var stopCmds []ElevatorCommand
+			_, stopCmds = FsmActOnBehaviourPair(elevator, DirnBehaviourPair{elevator.Direction, EB_Idle})
+			commands = append(commands, stopCmds...)
 
 		} else if RequestsShouldStop(elevator) {
 			var stopCmds []ElevatorCommand

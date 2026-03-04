@@ -8,6 +8,14 @@ import (
 
 const NumFloors = 4
 
+// HallUp and HallDown are the array indices for the two-element hall-request
+// and hall-button axis used throughout [NumFloors][2]bool and [2]RequestState.
+// They intentionally match int(elevio.BT_HallUp) and int(elevio.BT_HallDown).
+const (
+	HallUp   = 0
+	HallDown = 1
+)
+
 type ElevatorBehaviour int
 
 const (
@@ -42,6 +50,28 @@ type Elevator struct {
 	Config       Config
 }
 
+// ElevatorIn groups all channels that deliver events into RunElevator.
+// Inputs arrive from: hardware polling, the manager (HRA output), the door
+// module, the motor watchdog, and the network node (init signal).
+type ElevatorIn struct {
+	Floor        <-chan int
+	CabButton    <-chan elevio.ButtonEvent
+	HallRequests <-chan [][2]bool
+	DoorClosed   <-chan struct{}
+	MotorStall   <-chan struct{}
+	Init         <-chan struct{}
+}
+
+// ElevatorOut groups all channels that RunElevator writes into.
+type ElevatorOut struct {
+	NetworkState    chan<- Elevator           // broadcast to RunNetworkNode
+	LightsState     chan<- Elevator           // broadcast to RunLights
+	ServedHall      chan<- elevio.ButtonEvent // cleared hall requests → RunNetworkNode
+	DoorOpen        chan<- struct{}           // open-door signal → RunDoor
+	ResetMotorTimer chan<- struct{}           // keep motor watchdog alive
+	StopMotorTimer  chan<- struct{}           // disarm motor watchdog when motor stops
+}
+
 func ElevatorUninitialized() *Elevator {
 	return &Elevator{
 		Floor:     -1,
@@ -66,17 +96,32 @@ func InitBetweenFloors() (Elevator, time.Duration) {
 
 // ---- Command pattern ----
 
-type CommandType int
+type ElevatorCommand interface {
+	execute(out ElevatorOut)
+}
 
-const (
-	CmdSetMotorDirection CommandType = iota
-	CmdSetFloorIndicator
-	CmdDoorRequest
-)
+type CmdSetMotorDirectionCmd struct{ Dir elevio.MotorDirection }
+type CmdSetFloorIndicatorCmd struct{ Floor int }
+type CmdDoorRequestCmd struct{}
 
-type ElevatorCommand struct {
-	Type  CommandType
-	Value any // typed per CommandType: MotorDirection for CmdSetMotorDirection, int for the rest
+func (c CmdSetMotorDirectionCmd) execute(out ElevatorOut) {
+	elevio.SetMotorDirection(c.Dir)
+	if c.Dir != elevio.MD_Stop {
+		out.ResetMotorTimer <- struct{}{}
+	} else {
+		select {
+		case out.StopMotorTimer <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (c CmdSetFloorIndicatorCmd) execute(out ElevatorOut) {
+	elevio.SetFloorIndicator(c.Floor)
+}
+
+func (c CmdDoorRequestCmd) execute(out ElevatorOut) {
+	out.DoorOpen <- struct{}{}
 }
 
 func ElevatorPrint(elevator *Elevator) {
@@ -89,11 +134,11 @@ func ElevatorPrint(elevator *Elevator) {
 			floorMarker = "*"
 		}
 		hUp := "-"
-		if elevator.HallRequests[f][0] {
+		if elevator.HallRequests[f][HallUp] {
 			hUp = "^"
 		}
 		hDn := "-"
-		if elevator.HallRequests[f][1] {
+		if elevator.HallRequests[f][HallDown] {
 			hDn = "v"
 		}
 		cab := "-"

@@ -16,25 +16,27 @@ import (
 //     (ACTIVE), and only switched off when consensus says it has been cleared.
 //     RunLights does not decide when that happens, it only executes the command.
 //
-//   - Door lamp: driven by RunDoor via doorLampChan. RunDoor owns door state;
+//   - Door lamp: driven by RunDoor via in.DoorLamp. RunDoor owns door state;
 //     RunLights owns the lamp.
 
-func RunLights(
-	lightsElevatorStateChan <-chan elevatorcontroller.Elevator,
-	hallLightsChan <-chan [][2]bool,
-	doorLampChan <-chan bool,
-) {
+// LightsIn groups all channels that deliver display-state updates into RunLights.
+type LightsIn struct {
+	ElevatorState <-chan elevatorcontroller.Elevator
+	HallRequests  <-chan [][2]bool
+	DoorLamp      <-chan bool
+}
+
+func RunLights(in LightsIn) {
 	for {
 		select {
-		case elevator := <-lightsElevatorStateChan:
-
+		case elevator := <-in.ElevatorState:
 			setCabLights(elevator.CabRequests[:])
 			elevio.SetFloorIndicator(elevator.Floor)
 
-		case hallRequests := <-hallLightsChan:
+		case hallRequests := <-in.HallRequests:
 			setHallLights(hallRequests)
 
-		case open := <-doorLampChan:
+		case open := <-in.DoorLamp:
 			elevio.SetDoorOpenLamp(open)
 		}
 	}
@@ -48,7 +50,8 @@ func setCabLights(cabRequests []bool) {
 
 func setHallLights(hallRequests [][2]bool) {
 	for floor, btnPair := range hallRequests {
-		elevio.SetButtonLamp(elevio.BT_HallUp, floor, btnPair[0])
-		elevio.SetButtonLamp(elevio.BT_HallDown, floor, btnPair[1])
+		elevio.SetButtonLamp(elevio.BT_HallUp, floor, btnPair[elevatorcontroller.HallUp])
+		elevio.SetButtonLamp(elevio.BT_HallDown, floor, btnPair[elevatorcontroller.HallDown])
 	}
 }
+

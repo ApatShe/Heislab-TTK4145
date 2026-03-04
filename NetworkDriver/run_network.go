@@ -15,11 +15,8 @@ const (
 )
 
 func RunNetworkNode(
-	hallButtonChan <-chan elevio.ButtonEvent,
-	elevatorStateChan <-chan elevatorcontroller.Elevator,
-	snapshotChan chan<- NetworkSnapshot,
-	peerUpdateToManagerChan chan<- peers.PeerUpdate,
-	initChan chan<- int,
+	in NetworkNodeIn,
+	out NetworkNodeOut,
 	initState elevatorcontroller.Elevator,
 	id string,
 ) {
@@ -43,6 +40,10 @@ func RunNetworkNode(
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
+	// If no peer snapshot arrives within 2 seconds we are alone — safe to start.
+	startupTimer := time.NewTimer(2 * time.Second)
+	defer startupTimer.Stop()
+
 	readyToBroadcast := false
 
 	enableBroadcast := func() {
@@ -50,7 +51,7 @@ func RunNetworkNode(
 			readyToBroadcast = true
 			peerTxEnable <- true
 			select {
-			case initChan <- 1:
+			case out.Init <- struct{}{}:
 			default:
 			}
 		}
@@ -65,16 +66,36 @@ func RunNetworkNode(
 			}
 			iter++
 			currentSnapshot.Iter = iter
+			fmt.Printf("[TX] iter=%d hallRequests=%v elevators=%v\n", iter, currentSnapshot.HallRequests[id], currentSnapshot.Elevators[id])
 			snapshotTx <- currentSnapshot
 
-		case elevatorState := <-elevatorStateChan:
+		case <-startupTimer.C:
+			// No peer responded in time — treat as single-elevator startup.
+			enableBroadcast()
+
+		case elevatorState := <-in.ElevatorState:
 			currentSnapshot.Elevators[id] = LocalElevatorToElevatorState(elevatorState)
 
-		case hallButton := <-hallButtonChan:
+		case hallButton := <-in.HallButton:
 			currentSnapshot = markHallButtonAsRequested(currentSnapshot, id, hallButton)
+			currentSnapshot = AdvanceToActive(currentSnapshot, collectActivePeerIDs(id, knownStates))
+			select {
+			case out.Snapshot <- currentSnapshot:
+			default:
+			}
+
+		case served := <-in.ServedHall:
+			// The elevator has served this hall request — reset it to INACTIVE so
+			// the cyclic counter can propagate the clear to all peers.
+			buttonIndex := hallButtonIndex(served.Button)
+			ownRequests := currentSnapshot.HallRequests[id]
+			if ownRequests != nil && ownRequests[served.Floor][buttonIndex] == ACTIVE {
+				ownRequests[served.Floor][buttonIndex] = INACTIVE
+				currentSnapshot.HallRequests[id] = ownRequests
+			}
 
 		case peerUpdate := <-peerUpdateCh:
-			fmt.Printf("Peer update: peers=%q new=%q lost=%q\n", peerUpdate.Peers, peerUpdate.New, peerUpdate.Lost)
+			fmt.Printf("=== PEER UPDATE === peers=%q  NEW=%q  LOST=%q\n", peerUpdate.Peers, peerUpdate.New, peerUpdate.Lost)
 
 			// If we are the only peer on the network there is no state to recover
 			// from — safe to start broadcasting immediately.
@@ -85,19 +106,27 @@ func RunNetworkNode(
 			removeLostPeers(knownStates, peerUpdate.Lost)
 
 			select {
-			case peerUpdateToManagerChan <- peerUpdate:
+			case out.PeerUpdate <- peerUpdate:
 			default:
 			}
 		case receivedSnapshot := <-snapshotRx:
 			fmt.Printf("Received snapshot from %s (iter %d)\n", receivedSnapshot.NodeID, receivedSnapshot.Iter)
 			if isStaleSnapshot(knownStates, receivedSnapshot) {
+				fmt.Printf("  [stale, skipping]\n")
 				break
 			}
+			for nodeID, elev := range receivedSnapshot.Elevators {
+				fmt.Printf("  elevator[%s]: floor=%d dir=%s beh=%s\n", nodeID, elev.Floor, elev.Direction, elev.Behaviour)
+			}
+			fmt.Printf("  hallRequests: %v\n", receivedSnapshot.HallRequests)
 			knownStates[receivedSnapshot.NodeID] = receivedSnapshot
 			currentSnapshot = FilteredMessage(currentSnapshot, receivedSnapshot)
 			currentSnapshot = adoptHallRequestsFromPeers(currentSnapshot)
 			currentSnapshot = AdvanceToActive(currentSnapshot, collectActivePeerIDs(id, knownStates))
-			snapshotChan <- currentSnapshot
+			select {
+			case out.Snapshot <- currentSnapshot:
+			default:
+			}
 			// We have absorbed at least one peer snapshot — own UNKNOWN cabs have
 			// been recovered via mergeCabRequests. Safe to start broadcasting.
 			enableBroadcast()
@@ -105,13 +134,11 @@ func RunNetworkNode(
 	}
 }
 
-// hallButtonIndex returns 0 for HallUp and 1 for HallDown,
-// matching the [][2]RequestState button-axis convention.
+// hallButtonIndex converts a ButtonType to the corresponding array index used
+// in [][2]RequestState. Since BT_HallUp=0 and BT_HallDown=1 the cast is
+// direct; the function exists to make the intent explicit at call sites.
 func hallButtonIndex(button elevio.ButtonType) int {
-	if button == elevio.BT_HallDown {
-		return 1
-	}
-	return 0
+	return int(button)
 }
 
 // markHallButtonAsRequested sets the pressed hall button to REQUESTED on the
@@ -169,6 +196,9 @@ func newNetworkSnapshot(initState elevatorcontroller.Elevator, id string) Networ
 		CabRequests: ownCabRequests, // all UNKNOWN (zero value)
 	}
 	ownHallRequests := make([][2]RequestState, elevatorcontroller.NumFloors)
+	for i := range ownHallRequests {
+		ownHallRequests[i] = [2]RequestState{INACTIVE, INACTIVE}
+	}
 	return NetworkSnapshot{
 		NodeID: id,
 		HallRequests: map[string][][2]RequestState{
