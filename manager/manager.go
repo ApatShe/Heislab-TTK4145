@@ -2,6 +2,7 @@ package manager
 
 import (
 	elevatorcontroller "Heislab/ElevatorController"
+	"Heislab/Network/network/peers"
 	networkdriver "Heislab/NetworkDriver"
 )
 
@@ -19,17 +20,16 @@ func hallRequestToHRAInput(snapshot networkdriver.NetworkSnapshot) [][2]bool {
 	return hraInput
 }
 
-func extractElevatorStates(snapshot networkdriver.NetworkSnapshot) map[string]HRAElevState {
-
-	elevatorStates := make(map[string]HRAElevState, len(snapshot.Elevators))
-
+func extractActiveElevatorStates(snapshot networkdriver.NetworkSnapshot, activeElevators map[string]bool) map[string]HRAElevState {
+	elevatorStates := make(map[string]HRAElevState)
 	for nodeID, elevatorState := range snapshot.Elevators {
+		if !activeElevators[nodeID] {
+			continue
+		}
 		cabRequests := make([]bool, len(elevatorState.CabRequests))
-
 		for floor, requestState := range elevatorState.CabRequests {
 			cabRequests[floor] = networkdriver.RequestStateToBool(requestState)
 		}
-
 		elevatorStates[nodeID] = HRAElevState{
 			Behaviour:   elevatorState.Behaviour,
 			Floor:       elevatorState.Floor,
@@ -38,13 +38,6 @@ func extractElevatorStates(snapshot networkdriver.NetworkSnapshot) map[string]HR
 		}
 	}
 	return elevatorStates
-}
-
-func snapshotToHraInput(snapshot networkdriver.NetworkSnapshot) HRAInput {
-	return HRAInput{
-		HallRequests: hallRequestToHRAInput(snapshot),
-		States:       extractElevatorStates(snapshot),
-	}
 }
 
 func extractDesignatedHallRequests(delegatedHallRequests map[string][][2]bool, id string) [][2]bool {
@@ -56,27 +49,42 @@ func extractDesignatedHallRequests(delegatedHallRequests map[string][][2]bool, i
 
 func RunManager(
 	snapshotChan <-chan networkdriver.NetworkSnapshot,
+	peerUpdateToManagerChan <-chan peers.PeerUpdate,
+
 	hallRequestChan chan<- [][2]bool,
 	hallLightsChan chan<- [][2]bool,
 	id string,
 ) {
+	activeElevators := make(map[string]bool)
+
 	for {
-		snapshot := <-snapshotChan
-
-		hraInput := snapshotToHraInput(snapshot)
-
-		consensusHallRequests := hraInput.HallRequests
-
-		//non-blocking send of consensus hall requests to the lights manager, so that we can still delegate to the HRA
 		select {
-		case hallLightsChan <- consensusHallRequests:
-		default:
-		}
+		case peerUpdate := <-peerUpdateToManagerChan:
+			for _, lostID := range peerUpdate.Lost {
+				delete(activeElevators, lostID)
+			}
+			for _, peerID := range peerUpdate.Peers {
+				activeElevators[peerID] = true
+			}
 
-		delegatedHallRequests := OutputHallRequesstAssigner(hraInput)
-		designatedHallRequests := extractDesignatedHallRequests(delegatedHallRequests, id)
-		if designatedHallRequests != nil {
-			hallRequestChan <- designatedHallRequests
+		case snapshot := <-snapshotChan:
+			consensusHallRequests := hallRequestToHRAInput(snapshot)
+
+			select {
+			case hallLightsChan <- consensusHallRequests:
+			default:
+			}
+
+			hraInput := HRAInput{
+				HallRequests: consensusHallRequests,
+				States:       extractActiveElevatorStates(snapshot, activeElevators),
+			}
+
+			delegatedHallRequests := OutputHallRequestAssigner(hraInput)
+			designatedHallRequests := extractDesignatedHallRequests(delegatedHallRequests, id)
+			if designatedHallRequests != nil {
+				hallRequestChan <- designatedHallRequests
+			}
 		}
 	}
 }

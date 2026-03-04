@@ -2,7 +2,9 @@ package main
 
 import (
 	elevatorcontroller "Heislab/ElevatorController"
+	door "Heislab/Hardware"
 	"Heislab/Network/network/localip"
+	"Heislab/Network/network/peers"
 	networkdriver "Heislab/NetworkDriver"
 	"Heislab/driver-go/elevio"
 	"Heislab/manager"
@@ -74,7 +76,10 @@ func main() {
 	// // ---- Initialize elevator ----
 	elevio.Init("localhost:"+strconv.Itoa(port), elevatorcontroller.NumFloors)
 	//elevatorcontroller.InitFsm()
-	initElevator, doorOpenDuration := elevatorcontroller.InitBetweenFloors()
+	// InitBetweenFloors is deferred until RunElevator receives from initChan
+	// (after peer state is recovered). We still need the config values now.
+	initElevator := *elevatorcontroller.ElevatorUninitialized()
+	doorOpenDuration := initElevator.Config.DoorOpenDuration
 
 	// ---- Initialize hardware communication ----
 	buttonEventChan := make(chan elevio.ButtonEvent, 1)
@@ -97,14 +102,15 @@ func main() {
 	// Obstruction timer
 	resetObstructionWatchdogTimerChan := make(chan int)
 	stopObstructionWatchdogTimerChan := make(chan int)
-	obstructionTimeoutChan := make(chan int)
 	go timer.RunTimer(resetObstructionWatchdogTimerChan, stopObstructionWatchdogTimerChan, nil, obstructionTimeout, true, "Obstruction Watchdog")
 
 	// Motor timer
 	resetMotorWatchdogTimerChan := make(chan int)
-	stopMotorWatchdogTimerChan := make(chan int)
+	go timer.RunTimer(resetMotorWatchdogTimerChan, nil, nil, motorTimeout, true, "Motor Watchdog")
 
-	go timer.RunTimer(resetMotorWatchdogTimerChan, stopMotorWatchdogTimerChan, nil, motorTimeout, true, "Motor Watchdog")
+	// initChan: signals RunElevator that peer state has been recovered — safe to start motor.
+	initChan := make(chan int, 1)
+
 	// ---- Networking node communication ----
 	// TODO: Try unbuffering some of these channels and see what happens
 	hallButtonChan := make(chan elevio.ButtonEvent, 1) // hall presses → network node → cyclic counter
@@ -112,10 +118,12 @@ func main() {
 	hallRequestChan := make(chan [][2]bool, 1)         // HRA matrix   → elevator
 	elevatorStateChan := make(chan elevatorcontroller.Elevator, 1)
 	snapshotChan := make(chan networkdriver.NetworkSnapshot, 1) // consensus snapshot → manager
+	peerUpdateToManagerChan := make(chan peers.PeerUpdate, 1)   // peer updates → manager
 
 	// ---- Door communication ----
 	doorRequestChan := make(chan int)
-	doorCloseChan := make(chan int)
+	doorCloseChan   := make(chan int)
+	doorLampChan    := make(chan bool, 1)
 
 	// ---- Lights communication
 	lightsElevatorStateChan := make(chan elevatorcontroller.Elevator, 1)
@@ -139,14 +147,17 @@ func main() {
 		hallButtonChan,
 		elevatorStateChan,
 		snapshotChan,
+		peerUpdateToManagerChan,
+		initChan,
 		initElevator,
 		id,
 	)
 
 	go manager.RunManager(
-		snapshotChan,    // ← consensus snapshot after cyclic counter + AdvanceToActive
-		hallRequestChan, // ← HRA-assigned [][2]bool matrix → elevator
-		hallLightsChan,  // ← HRA-assigned [][2]bool matrix → lights
+		snapshotChan,            // ← consensus snapshot after cyclic counter + AdvanceToActive
+		peerUpdateToManagerChan, // ← peer updates from network node
+		hallRequestChan,         // ← HRA-assigned [][2]bool matrix → elevator
+		hallLightsChan,          // ← HRA-assigned [][2]bool matrix → lights
 		id,
 	)
 
@@ -159,22 +170,22 @@ func main() {
 		lightsElevatorStateChan,
 		elevatorStateChan,
 		resetMotorWatchdogTimerChan,
-		stopMotorWatchdogTimerChan,
+		initChan,
 	)
 
 	go door.RunDoor(
 		obstructionChan,
 		doorTimeoutChan,
-		obstructionTimeoutChan,
 		doorRequestChan,
 		doorCloseChan,
+		doorLampChan,
 		resetDoorTimerChan,
 		resetObstructionWatchdogTimerChan,
 		stopObstructionWatchdogTimerChan,
 		obstructionInit,
 	)
 
-	go lights.RunLights(lightsElevatorStateChan, hallLightsChan)
+	go lights.RunLights(lightsElevatorStateChan, hallLightsChan, doorLampChan)
 
 	//go disconnector.RunDisconnector(disconnectChan)
 

@@ -136,7 +136,7 @@ func FilteredMessage(local, received NetworkSnapshot) NetworkSnapshot {
 // This is the adoption predicate: case B of the INACTIVE→REQUESTED transition.
 func shouldAdoptHallRequest(snapshot NetworkSnapshot, floorIndex int, buttonIndex int) bool {
 	ownRequest := snapshot.HallRequests[snapshot.NodeID][floorIndex][buttonIndex]
-	return ownRequest == INACTIVE && isHallRequestKnownByAnyPeer(snapshot, floorIndex, buttonIndex)
+	return (ownRequest == UNKNOWN || ownRequest == INACTIVE) && isHallRequestKnownByAnyPeer(snapshot, floorIndex, buttonIndex)
 }
 
 // adoptHallRequestsFromPeers advances own hall-request entries to REQUESTED

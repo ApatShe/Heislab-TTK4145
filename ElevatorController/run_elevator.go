@@ -25,13 +25,16 @@ func RunElevator(
 	lightsElevatorStateChan chan<- Elevator,
 	elevatorStateChan chan<- Elevator,
 	resetMotorWatchdogTimerChan chan<- int,
-	stopMotorWatchdogTimerChan chan<- int,
+	initChan <-chan int,
 ) {
-	elevator := ElevatorUninitialized()
+	// Block until NetworkNode signals peer state has been recovered.
+	// This prevents the motor from starting before cab requests are known.
+	<-initChan
 
-	// If we start between floors the motor was already started by InitBetweenFloors;
-	// arm the motor watchdog so a stall is detected.
+	elevator := ElevatorUninitialized()
+	// Start motor down if between floors; arm watchdog to detect a stall.
 	if elevio.GetFloor() == -1 {
+		elevio.SetMotorDirection(elevio.MD_Down)
 		elevator.Direction = elevio.MD_Down
 		elevator.Behaviour = EB_Moving
 		resetMotorWatchdogTimerChan <- 1
@@ -72,7 +75,7 @@ func RunElevator(
 
 		}
 
-		executeCommands(commands, doorRequestChan, resetMotorWatchdogTimerChan, stopMotorWatchdogTimerChan)
+		executeCommands(commands, doorRequestChan, resetMotorWatchdogTimerChan)
 		broadcast()
 	}
 }
@@ -84,7 +87,6 @@ func executeCommands(
 	commands []ElevatorCommand,
 	doorRequestChan chan<- int,
 	resetMotorWatchdogTimerChan chan<- int,
-	stopMotorWatchdogTimerChan chan<- int,
 ) {
 	for _, cmd := range commands {
 		switch cmd.Type {
@@ -93,13 +95,10 @@ func executeCommands(
 			elevio.SetMotorDirection(dir)
 			if dir != elevio.MD_Stop {
 				resetMotorWatchdogTimerChan <- 1
-			} else {
-				stopMotorWatchdogTimerChan <- 1
 			}
 
 		case CmdSetFloorIndicator:
 			elevio.SetFloorIndicator(cmd.Value.(int))
-			stopMotorWatchdogTimerChan <- 1
 
 		case CmdDoorRequest:
 			doorRequestChan <- 1

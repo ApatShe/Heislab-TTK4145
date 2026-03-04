@@ -18,6 +18,8 @@ func RunNetworkNode(
 	hallButtonChan <-chan elevio.ButtonEvent,
 	elevatorStateChan <-chan elevatorcontroller.Elevator,
 	snapshotChan chan<- NetworkSnapshot,
+	peerUpdateToManagerChan chan<- peers.PeerUpdate,
+	initChan chan<- int,
 	initState elevatorcontroller.Elevator,
 	id string,
 ) {
@@ -47,6 +49,10 @@ func RunNetworkNode(
 		if !readyToBroadcast {
 			readyToBroadcast = true
 			peerTxEnable <- true
+			select {
+			case initChan <- 1:
+			default:
+			}
 		}
 	}
 
@@ -69,16 +75,19 @@ func RunNetworkNode(
 
 		case peerUpdate := <-peerUpdateCh:
 			fmt.Printf("Peer update: peers=%q new=%q lost=%q\n", peerUpdate.Peers, peerUpdate.New, peerUpdate.Lost)
-			if peerUpdate.New == id {
-				currentSnapshot = flipOwnUnknownsToInactive(currentSnapshot, id)
-			}
+
 			// If we are the only peer on the network there is no state to recover
 			// from — safe to start broadcasting immediately.
 			if isAloneOnNetwork(peerUpdate) {
 				enableBroadcast()
 			}
+
 			removeLostPeers(knownStates, peerUpdate.Lost)
 
+			select {
+			case peerUpdateToManagerChan <- peerUpdate:
+			default:
+			}
 		case receivedSnapshot := <-snapshotRx:
 			fmt.Printf("Received snapshot from %s (iter %d)\n", receivedSnapshot.NodeID, receivedSnapshot.Iter)
 			if isStaleSnapshot(knownStates, receivedSnapshot) {
@@ -115,14 +124,6 @@ func markHallButtonAsRequested(snapshot NetworkSnapshot, nodeID string, button e
 		ownRequests[button.Floor][buttonIndex] = REQUESTED
 		snapshot.HallRequests[nodeID] = ownRequests
 	}
-	return snapshot
-}
-
-// flipOwnUnknownsToInactive resets all UNKNOWN entries in the node's own
-// hall-request row to INACTIVE. Called when the node first appears on the
-// peer list, signalling that no hall requests were pending before joining.
-func flipOwnUnknownsToInactive(snapshot NetworkSnapshot, nodeID string) NetworkSnapshot {
-	snapshot.HallRequests[nodeID] = withUnknownsFlippedToInactive(snapshot.HallRequests[nodeID])
 	return snapshot
 }
 
