@@ -29,7 +29,7 @@ fi
 # Restart loop — keeps the elevator running across crashes/kills
 echo "Starting elevator $NODE_ID on port $SIM_PORT (Ctrl-C to stop restart loop)"
 while true; do
-    ./heislab --port "$SIM_PORT" --id "$NODE_ID" || true
+    ./heislab --port "$SIM_PORT" --id "$NODE_ID" --local || true
     echo "Elevator process exited. Rebuilding and restarting in 1 s..."
     sleep 1
     go build -o heislab . 2>&1 || echo "Build failed — retrying after next exit"

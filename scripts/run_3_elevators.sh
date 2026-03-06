@@ -51,5 +51,5 @@ for i in $(seq 0 $((NUM_ELEVATORS - 1))); do
     fi
 
     # Elevator process — restart loop
-    launch_term "Node $NODE_ID" "cd $ROOT; while true; do ./heislab --port $SIM_PORT --id $NODE_ID || true; echo 'Node $NODE_ID exited. Restarting in 1s...'; sleep 1; done; exec bash"
+    launch_term "Node $NODE_ID" "cd $ROOT; while true; do ./heislab --port $SIM_PORT --id $NODE_ID --local || true; echo 'Node $NODE_ID exited. Restarting in 1s...'; sleep 1; done; exec bash"
 done

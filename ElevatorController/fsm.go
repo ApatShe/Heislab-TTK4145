@@ -71,6 +71,9 @@ func FsmOnCabRequest(elevator *Elevator, btnFloor int) ([]elevio.ButtonEvent, []
 // If the elevator is idle it acts immediately on any newly assigned requests.
 func FsmOnHallRequestsUpdate(elevator *Elevator, newRequests [][2]bool) ([]elevio.ButtonEvent, []ElevatorCommand) {
 	fmt.Printf("\n\nFsmOnHallRequestsUpdate()\n")
+	fmt.Printf("[FSM] HallRequestsUpdate called, floor=%d beh=%v requests=%v\n",
+		elevator.Floor, elevator.Behaviour, newRequests)
+
 	ElevatorPrint(elevator)
 
 	replaceHallRequests(elevator, newRequests)
