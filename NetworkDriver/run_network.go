@@ -2,16 +2,16 @@ package networkdriver
 
 import (
 	elevatorcontroller "Heislab/ElevatorController"
+	log "Heislab/Log"
 	"Heislab/Network/network/bcast"
 	"Heislab/Network/network/peers"
 	"Heislab/driver-go/elevio"
-	"fmt"
 	"time"
 )
 
 const (
-	peerUpdateBroadcastPort = 36251
-	snaphotBroadCastPort    = 12345
+	peerUpdateBroadcastPort = 15647 // Match vanilla example
+	snaphotBroadCastPort    = 12345 // Keep your snapshot port
 )
 
 func RunNetworkNode(
@@ -68,7 +68,8 @@ func RunNetworkNode(
 			iter++
 			currentSnapshot.Iter = iter
 			knownStates[id] = currentSnapshot
-			fmt.Printf("[TX] iter=%d hallRequests=%v elevators=%v\n", iter, currentSnapshot.HallRequests[id], currentSnapshot.Elevators[id])
+			log.Log("[TX] iter=%d hallRequests=%v elevators=%v", iter, currentSnapshot.HallRequests[id], currentSnapshot.Elevators[id])
+
 			select {
 			case snapshotTx <- currentSnapshot:
 			default:
@@ -123,38 +124,27 @@ func RunNetworkNode(
 			}
 
 		case peerUpdate := <-peerUpdateCh:
-			fmt.Printf("=== PEER UPDATE === peers=%q  NEW=%q  LOST=%q\n", peerUpdate.Peers, peerUpdate.New, peerUpdate.Lost)
+			log.Log("PEER UPDATE: peers=%q NEW=%q LOST=%q", peerUpdate.Peers, peerUpdate.New, peerUpdate.Lost)
 
 			wasSolo := isSolo
 			isSolo = isAloneOnNetwork(peerUpdate)
 			if isSolo && !wasSolo {
+				log.Log("Transitioned to solo mode, enabling broadcast")
 				enableBroadcast()
 			}
 
 			removeLostPeers(knownStates, peerUpdate.Lost)
 
-			livePeerIDs = make([]string, 0, len(peerUpdate.Peers)+1)
-			livePeerIDs = append(livePeerIDs, id)
-			for _, peer := range peerUpdate.Peers {
-				livePeerIDs = append(livePeerIDs, peer)
-			}
-
-			// If we just lost the last peer, promote any pending REQUESTEDs to ACTIVE.
-			// knownStates has already had the lost peer removed above, so
-			// AdvanceToActive will no longer wait on them.
-			if isSolo && !wasSolo && readyToBroadcast {
-				prev := currentSnapshot
-				currentSnapshot = AdvanceToActive(currentSnapshot, livePeerIDs, knownStates)
-				if snapshotChanged(prev, currentSnapshot, id) {
-					iter++
-					currentSnapshot.Iter = iter
-					knownStates[id] = currentSnapshot
-					forceSend(snapshotTx, currentSnapshot)
-					select {
-					case out.Snapshot <- currentSnapshot:
-					default:
-					}
+			// Only update livePeerIDs if there are actual peers reported
+			if len(peerUpdate.Peers) > 0 {
+				livePeerIDs = make([]string, 0, len(peerUpdate.Peers)+1)
+				livePeerIDs = append(livePeerIDs, id)
+				for _, peer := range peerUpdate.Peers {
+					livePeerIDs = append(livePeerIDs, peer)
 				}
+				log.Log("livePeerIDs updated to %v", livePeerIDs)
+			} else {
+				log.Log("peerUpdate.Peers empty, keeping previous livePeerIDs=%v", livePeerIDs)
 			}
 
 			select {
@@ -163,12 +153,12 @@ func RunNetworkNode(
 			}
 
 		case receivedSnapshot := <-snapshotRx:
-			fmt.Printf("Received snapshot from %s (iter %d)\n", receivedSnapshot.NodeID, receivedSnapshot.Iter)
+			log.Log("Received snapshot from %s (iter %d)", receivedSnapshot.NodeID, receivedSnapshot.Iter)
 
 			for nodeID, elev := range receivedSnapshot.Elevators {
-				fmt.Printf("  elevator[%s]: floor=%d dir=%s beh=%s\n", nodeID, elev.Floor, elev.Direction, elev.Behaviour)
+				log.Log("  elevator[%s]: floor=%d dir=%s beh=%s", nodeID, elev.Floor, elev.Direction, elev.Behaviour)
 			}
-			fmt.Printf("  hallRequests: %v\n", receivedSnapshot.HallRequests)
+			log.Log("  hallRequests: %v", receivedSnapshot.HallRequests)
 
 			knownStates[receivedSnapshot.NodeID] = receivedSnapshot
 			prevSnapshot := currentSnapshot
@@ -215,9 +205,15 @@ func hallButtonIndex(button elevio.ButtonType) int {
 }
 
 func markHallButtonAsRequested(snapshot NetworkSnapshot, nodeID string, button elevio.ButtonEvent) NetworkSnapshot {
+
+	log.Log("markHallButtonAsRequested: nodeID=%s floor=%d btn=%d", nodeID, button.Floor, button.Button)
+
 	buttonIndex := hallButtonIndex(button.Button)
 
 	if _, ok := snapshot.HallRequests[nodeID]; !ok {
+
+		log.Log("markHallButtonAsRequested: nodeID=%s not found in HallRequests, returning early", nodeID)
+
 		return snapshot
 	}
 
@@ -228,6 +224,10 @@ func markHallButtonAsRequested(snapshot NetworkSnapshot, nodeID string, button e
 
 		newReqs[button.Floor][buttonIndex] = REQUESTED
 		snapshot.HallRequests[nodeID] = newReqs
+
+		log.Log("markHallButtonAsRequested: marked as REQUESTED for nodeID=%s floor=%d btn=%d", nodeID, button.Floor, button.Button)
+	} else {
+		log.Log("markHallButtonAsRequested: floor=%d btn=%d already at state=%d, skipping", button.Floor, button.Button, ownRequests[button.Floor][buttonIndex])
 	}
 	return snapshot
 }

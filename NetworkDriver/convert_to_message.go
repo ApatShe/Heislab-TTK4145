@@ -41,7 +41,7 @@ const (
 type NetworkNodeIn struct {
 	HallButton    <-chan elevio.ButtonEvent          // local hall button presses
 	ElevatorState <-chan elevatorcontroller.Elevator // local elevator FSM state
-	ServedHall    <-chan elevio.ButtonEvent           // served hall requests to clear
+	ServedHall    <-chan elevio.ButtonEvent          // served hall requests to clear
 }
 
 // NetworkNodeOut groups all channels that RunNetworkNode writes into.

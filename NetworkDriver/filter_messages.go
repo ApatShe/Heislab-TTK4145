@@ -1,5 +1,10 @@
 package networkdriver
 
+import (
+	log "Heislab/Log"
+	"maps"
+)
+
 // filter_messages.go implements the cyclic counter algorithm for merging
 // distributed elevator request states across network nodes.
 //
@@ -148,9 +153,11 @@ func mergeElevators(local, received NetworkSnapshot) map[string]ElevatorState {
 }
 
 func FilteredMessage(local, received NetworkSnapshot) NetworkSnapshot {
+	log.Log("FilteredMessage: merging snapshot from %s (iter %d)", received.NodeID, received.Iter)
 	merged := local
 	merged.Elevators = mergeElevators(local, received)
 	merged.HallRequests = mergeHallRequests(local.HallRequests, received.HallRequests, received.NodeID, local.NodeID)
+	log.Log("FilteredMessage: result hallRequests=%v", merged.HallRequests)
 	return merged
 }
 
@@ -172,6 +179,7 @@ func adoptHallRequestsFromPeers(snapshot NetworkSnapshot) NetworkSnapshot {
 	for floorIndex := range ownRequests {
 		for buttonIndex := range ownRequests[floorIndex] {
 			if shouldAdoptHallRequest(snapshot, floorIndex, buttonIndex) {
+				log.Log("adoptHallRequestsFromPeers: floor=%d btn=%d adopted→REQUESTED", floorIndex, buttonIndex)
 				ownRequests[floorIndex][buttonIndex] = REQUESTED
 			}
 		}
@@ -199,6 +207,7 @@ func propagateResetsToOwn(snapshot NetworkSnapshot, received NetworkSnapshot) Ne
 	for f := range own {
 		for b := 0; b < 2; b++ {
 			if own[f][b] == ACTIVE && senderEntry[f][b] == INACTIVE {
+				log.Log("propagateResetsToOwn: floor=%d btn=%d ACTIVE→INACTIVE (reset by %s)", f, b, received.NodeID)
 				own[f][b] = INACTIVE
 				changed = true
 			}
@@ -232,21 +241,29 @@ func allLivePeersKnowRequest(
 	knownStates map[string]NetworkSnapshot,
 	f, b int,
 ) bool {
+	log.Log("allLivePeersKnowRequest(floor=%d btn=%d): livePeerIDs=%v knownStates=%v ownStatus=%d",
+		f, b, livePeerIDs, maps.Keys(knownStates), snapshot.HallRequests[snapshot.NodeID][f][b])
+
+	consensusPeers := make([]string, 0)
 	for _, peerID := range livePeerIDs {
 		if peerID == snapshot.NodeID {
 			continue
 		}
-		// Only require consensus from peers we have actually heard from.
-		// A peer in livePeerIDs but absent from knownStates is a ghost
-		// (e.g. detected by peers.Receiver but snapshot never arrived).
-		if _, known := knownStates[peerID]; !known {
-			continue
+		if _, known := knownStates[peerID]; known {
+			consensusPeers = append(consensusPeers, peerID)
 		}
+	}
+	log.Log("allLivePeersKnowRequest: consensusPeers=%v (intersection of livePeerIDs & knownStates)", consensusPeers)
+
+	for _, peerID := range consensusPeers {
 		peerStatus := snapshot.HallRequests[peerID][f][b]
+		log.Log("allLivePeersKnowRequest: peer=%s status=%d (need >= %d)", peerID, peerStatus, REQUESTED)
 		if peerStatus < REQUESTED {
+			log.Log("allLivePeersKnowRequest: peer %s has %d < REQUESTED → veto", peerID, peerStatus)
 			return false
 		}
 	}
+	log.Log("allLivePeersKnowRequest: ALL consensusPeers >= REQUESTED → OK")
 	return true
 }
 
@@ -268,7 +285,10 @@ func AdvanceToActive(
 		for b := 0; b < 2; b++ {
 			if ownRequests[f][b] == REQUESTED {
 				if allLivePeersKnowRequest(snapshot, livePeerIDs, knownStates, f, b) {
+					log.Log("AdvanceToActive: floor=%d btn=%d REQUESTED→ACTIVE peers=%v", f, b, livePeerIDs)
 					ownRequests[f][b] = ACTIVE
+				} else {
+					log.Log("AdvanceToActive: floor=%d btn=%d REQUESTED but peers not ready peers=%v", f, b, livePeerIDs)
 				}
 			}
 		}

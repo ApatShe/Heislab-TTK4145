@@ -1,6 +1,7 @@
 package peers
 
 import (
+	log "Heislab/Log"
 	"Heislab/Network/network/conn"
 	"fmt"
 	"net"
@@ -30,6 +31,7 @@ func Transmitter(port int, id string, transmitEnable <-chan bool) {
 		}
 		if enable {
 			conn.WriteTo([]byte(id), addr)
+			log.Log("TX heartbeat: %s → 255.255.255.255:%d\n", id, port)
 		}
 	}
 }
