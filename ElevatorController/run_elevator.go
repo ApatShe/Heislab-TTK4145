@@ -44,10 +44,7 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 		for _, btn := range served {
 			isHallButton := btn.Button == elevio.BT_HallUp || btn.Button == elevio.BT_HallDown
 			if isHallButton {
-				select {
-				case out.ServedHall <- btn:
-				default:
-				}
+				out.ServedHall <- btn // blocking: this MUST reach the manager
 			}
 		}
 	}

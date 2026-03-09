@@ -73,7 +73,6 @@ func FsmOnHallRequestsUpdate(elevator *Elevator, newRequests [][2]bool) ([]elevi
 	fmt.Printf("\n\nFsmOnHallRequestsUpdate()\n")
 	fmt.Printf("[FSM] HallRequestsUpdate called, floor=%d beh=%v requests=%v\n",
 		elevator.Floor, elevator.Behaviour, newRequests)
-
 	ElevatorPrint(elevator)
 
 	replaceHallRequests(elevator, newRequests)
@@ -81,8 +80,19 @@ func FsmOnHallRequestsUpdate(elevator *Elevator, newRequests [][2]bool) ([]elevi
 	var served []elevio.ButtonEvent
 	var commands []ElevatorCommand
 
-	if elevator.Behaviour == EB_Idle {
+	switch elevator.Behaviour {
+	case EB_Idle:
 		served, commands = FsmActOnBehaviourPair(elevator, RequestsChooseDirection(elevator))
+
+	case EB_DoorOpen:
+		// General fix: any request assigned at our current floor while doors
+		// are open should be served immediately and the door timer restarted.
+		// RequestsClearAtCurrentFloor already knows direction, floor, and all
+		// request types — this covers every case, not just the HallDown race.
+		served = RequestsClearAtCurrentFloor(elevator)
+		if len(served) > 0 {
+			commands = append(commands, CmdDoorRequestCmd{})
+		}
 	}
 
 	fmt.Println("\nNew state:")

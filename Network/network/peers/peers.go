@@ -18,11 +18,16 @@ type PeerUpdate struct {
 const interval = 15 * time.Millisecond
 const timeout = 500 * time.Millisecond
 
-func Transmitter(port int, id string, transmitEnable <-chan bool) {
+// Mirrors bcast.broadcastIP — set once from main via SetBroadcastAddr
+var broadcastIP = "255.255.255.255"
 
-	conn := conn.DialBroadcastUDP(port)
-	addr, _ := net.ResolveUDPAddr("udp4", fmt.Sprintf("255.255.255.255:%d", port))
+func SetBroadcastAddr(addr string) {
+	broadcastIP = addr
+}
 
+func PeersTransmitter(port int, id string, transmitEnable <-chan bool) {
+	c := conn.DialBroadcastUDP(port)
+	addr, _ := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", broadcastIP, port))
 	enable := true
 	for {
 		select {
@@ -30,60 +35,79 @@ func Transmitter(port int, id string, transmitEnable <-chan bool) {
 		case <-time.After(interval):
 		}
 		if enable {
-			conn.WriteTo([]byte(id), addr)
-			log.Log("TX heartbeat: %s → 255.255.255.255:%d\n", id, port)
+			c.WriteTo([]byte(id), addr)
+			log.Log("TX heartbeat: %s → %s:%d", id, broadcastIP, port)
 		}
 	}
 }
 
-func Receiver(port int, peerUpdateCh chan<- PeerUpdate) {
+func PeersReceiver(port int, peerUpdateCh chan<- PeerUpdate) {
+	log.Log("Receiver starting on UDP port %d", port)
+
+	// Same pattern as BcastReceiver — conn.DialBroadcastUDP handles
+	// SO_REUSEADDR + broadcast flag, works across multiple processes
+	c := conn.DialBroadcastUDP(port)
 
 	var buf [1024]byte
-	var p PeerUpdate
 	lastSeen := make(map[string]time.Time)
+	prevPeers := make(map[string]bool)
 
-	conn := conn.DialBroadcastUDP(port)
+	ticker := time.NewTicker(600 * time.Millisecond)
+	defer ticker.Stop()
 
 	for {
-		updated := false
-
-		conn.SetReadDeadline(time.Now().Add(interval))
-		n, _, _ := conn.ReadFrom(buf[0:])
-
-		id := string(buf[:n])
-
-		// Adding new connection
-		p.New = ""
-		if id != "" {
-			if _, idExists := lastSeen[id]; !idExists {
-				p.New = id
-				updated = true
+		select {
+		case <-ticker.C:
+			now := time.Now()
+			lost := []string{}
+			for id, t := range lastSeen {
+				if now.Sub(t) > timeout {
+					lost = append(lost, id)
+					delete(lastSeen, id)
+					log.Log("RX TIMEOUT: lost peer %q (age %v)", id, now.Sub(t))
+				}
 			}
 
-			lastSeen[id] = time.Now()
-		}
-
-		// Removing dead connection
-		p.Lost = make([]string, 0)
-		for k, v := range lastSeen {
-			if time.Now().Sub(v) > timeout {
-				updated = true
-				p.Lost = append(p.Lost, k)
-				delete(lastSeen, k)
+			peersList := []string{}
+			for id := range lastSeen {
+				peersList = append(peersList, id)
 			}
-		}
+			sort.Strings(peersList)
+			sort.Strings(lost)
 
-		// Sending update
-		if updated {
-			p.Peers = make([]string, 0, len(lastSeen))
-
-			for k, _ := range lastSeen {
-				p.Peers = append(p.Peers, k)
+			p := PeerUpdate{
+				Peers: peersList,
+				Lost:  lost,
 			}
 
-			sort.Strings(p.Peers)
-			sort.Strings(p.Lost)
+			for _, pid := range peersList {
+				if !prevPeers[pid] {
+					p.New = pid
+					break
+				}
+			}
+
+			prevPeers = make(map[string]bool, len(peersList))
+			for _, pid := range peersList {
+				prevPeers[pid] = true
+			}
+
 			peerUpdateCh <- p
+			log.Log("RX state: peers=%v new=%q lost=%v", peersList, p.New, lost)
+
+		default:
+			c.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+			n, addr, err := c.ReadFrom(buf[0:])
+			if err == nil && n > 0 {
+				id := string(buf[:n])
+				if id != "" && len(id) < 16 {
+					oldLen := len(lastSeen)
+					lastSeen[id] = time.Now()
+					if len(lastSeen) > oldLen {
+						log.Log("RX NEW PEER %q from %v (total %d)", id, addr, len(lastSeen))
+					}
+				}
+			}
 		}
 	}
 }

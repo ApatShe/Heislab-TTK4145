@@ -21,9 +21,11 @@ import (
 // ---- Configuration -------------------------------------------------------
 
 type NodeConfig struct {
-	Port      int
-	ID        string
-	LocalMode bool
+	Port           int
+	PeerRXPort     int
+	SnapshotRXPort int
+	ID             string
+	LocalMode      bool
 }
 
 const (
@@ -34,10 +36,15 @@ const (
 
 func parseFlags() NodeConfig {
 	var cfg NodeConfig
-	flag.IntVar(&cfg.Port, "port", defaultElevatorPort, "Simulator TCP port")
-	flag.StringVar(&cfg.ID, "id", resolveLocalIP(), "Network node id (default: local IP)")
-	flag.BoolVar(&cfg.LocalMode, "local", false, "Use subnet broadcast for same-machine testing")
+	flag.IntVar(&cfg.Port, "port", defaultElevatorPort, "Simulator TCP port") // Unique per instance
+	flag.StringVar(&cfg.ID, "id", resolveLocalIP(), "Network node id")
+	flag.BoolVar(&cfg.LocalMode, "local", false, "Use subnet broadcast")
 	flag.Parse()
+
+	// FIXED: Same for all instances
+	cfg.PeerRXPort = 15657     // All RX peer heartbeats here
+	cfg.SnapshotRXPort = 15667 // All RX snapshots here
+
 	return cfg
 }
 
@@ -54,6 +61,7 @@ func configureNetwork(cfg NodeConfig) {
 		addr := subnetBroadcastAddr(resolveLocalIP())
 		fmt.Printf("[local mode] using broadcast address %s\n", addr)
 		bcast.SetBroadcastAddr(addr)
+		peers.SetBroadcastAddr(addr)
 	}
 	fmt.Printf("Starting node id=%s port=%d\n", cfg.ID, cfg.Port)
 }
@@ -311,7 +319,10 @@ func main() {
 
 	go routeButtons(hw.Buttons, cabOrderCh, hallButtonCh)
 
-	launchNetworkNode(cfg.ID, initElev, hallButtonCh, elevatorStateCh, servedHallCh, snapshotCh, peerUpdateCh, safeToStartCh)
+	launchNetworkNode(cfg.ID, initElev,
+		hallButtonCh, elevatorStateCh, servedHallCh,
+		snapshotCh, peerUpdateCh, safeToStartCh)
+
 	launchManager(cfg.ID, snapshotCh, peerUpdateCh, hallRequestCh, hallLightsCh, doorInitCh)
 	launchElevatorFSM(hw, motorWatchdog, cabOrderCh, hallRequestCh, doorClosedCh, safeToStartCh, elevatorStateCh, lightsStateCh, servedHallCh, doorOpenReqCh)
 	launchDoor(hw, doorTimer, obstructionWatchdog, doorOpenReqCh, doorInitCh, doorClosedCh, doorLampCh)

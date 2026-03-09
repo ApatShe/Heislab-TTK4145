@@ -25,7 +25,7 @@ func SetBroadcastAddr(addr string) {
 
 // Encodes received values from `chans` into type-tagged JSON, then broadcasts
 // it on `port`
-func Transmitter(port int, chans ...interface{}) {
+func BcastTransmitter(port int, chans ...interface{}) {
 	checkArgs(chans...)
 	typeNames := make([]string, len(chans))
 	selectCases := make([]reflect.SelectCase, len(typeNames))
@@ -59,7 +59,7 @@ func Transmitter(port int, chans ...interface{}) {
 
 // Matches type-tagged JSON received on `port` to element types of `chans`, then
 // sends the decoded value on the corresponding channel
-func Receiver(port int, chans ...interface{}) {
+func BcastReceiver(port int, chans ...interface{}) {
 	checkArgs(chans...)
 	chansMap := make(map[string]interface{})
 	for _, ch := range chans {

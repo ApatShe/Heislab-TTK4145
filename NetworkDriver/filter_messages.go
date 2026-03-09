@@ -2,7 +2,6 @@ package networkdriver
 
 import (
 	log "Heislab/Log"
-	"maps"
 )
 
 // filter_messages.go implements the cyclic counter algorithm for merging
@@ -99,14 +98,13 @@ func mergePeerEntry(local, received [][2]RequestState, isOwnEntry bool) [][2]Req
 	return merged
 }
 
-func mergeHallRequests(local, received map[string][][2]RequestState, receivedNodeID string, localID string) map[string][][2]RequestState {
+func mergeHallRequests(local, received map[string][][2]RequestState, localID string) map[string][][2]RequestState {
 	merged := copyHallRequests(local)
 
-	// Iterate through EVERY peer entry in the received snapshot
 	for nodeID, receivedEntry := range received {
+		// Correct: protect my own entry only
 		isOwnEntry := (nodeID == localID)
 
-		// Use mergePeerEntry to apply cyclic rules for each node's state
 		merged[nodeID] = mergePeerEntry(local[nodeID], receivedEntry, isOwnEntry)
 	}
 	return merged
@@ -156,7 +154,7 @@ func FilteredMessage(local, received NetworkSnapshot) NetworkSnapshot {
 	log.Log("FilteredMessage: merging snapshot from %s (iter %d)", received.NodeID, received.Iter)
 	merged := local
 	merged.Elevators = mergeElevators(local, received)
-	merged.HallRequests = mergeHallRequests(local.HallRequests, received.HallRequests, received.NodeID, local.NodeID)
+	merged.HallRequests = mergeHallRequests(local.HallRequests, received.HallRequests, local.NodeID)
 	log.Log("FilteredMessage: result hallRequests=%v", merged.HallRequests)
 	return merged
 }
@@ -241,9 +239,10 @@ func allLivePeersKnowRequest(
 	knownStates map[string]NetworkSnapshot,
 	f, b int,
 ) bool {
-	log.Log("allLivePeersKnowRequest(floor=%d btn=%d): livePeerIDs=%v knownStates=%v ownStatus=%d",
-		f, b, livePeerIDs, maps.Keys(knownStates), snapshot.HallRequests[snapshot.NodeID][f][b])
-
+	// consensusPeers = livePeerIDs ∩ knownStates (excluding self)
+	// livePeerIDs: currently online peers
+	// knownStates: persistent snapshots — includes dead peers, but they
+	//              won't appear in livePeerIDs so they never block consensus
 	consensusPeers := make([]string, 0)
 	for _, peerID := range livePeerIDs {
 		if peerID == snapshot.NodeID {
@@ -253,17 +252,28 @@ func allLivePeersKnowRequest(
 			consensusPeers = append(consensusPeers, peerID)
 		}
 	}
-	log.Log("allLivePeersKnowRequest: consensusPeers=%v (intersection of livePeerIDs & knownStates)", consensusPeers)
+
+	log.Log("allLivePeersKnowRequest(floor=%d btn=%d): livePeerIDs=%v consensusPeers=%v ownStatus=%d",
+		f, b, livePeerIDs, consensusPeers, snapshot.HallRequests[snapshot.NodeID][f][b])
+
+	// No intersection — either truly solo or peers not yet heard from.
+	// Only allow advance in genuine solo mode (self is the only live peer).
+	if len(consensusPeers) == 0 {
+		soloMode := len(livePeerIDs) <= 1
+		log.Log("allLivePeersKnowRequest: no consensusPeers, soloMode=%v → %v", soloMode, soloMode)
+		return soloMode
+	}
 
 	for _, peerID := range consensusPeers {
 		peerStatus := snapshot.HallRequests[peerID][f][b]
-		log.Log("allLivePeersKnowRequest: peer=%s status=%d (need >= %d)", peerID, peerStatus, REQUESTED)
+		log.Log("allLivePeersKnowRequest: peer=%s status=%d (need >= REQUESTED=%d)", peerID, peerStatus, REQUESTED)
 		if peerStatus < REQUESTED {
-			log.Log("allLivePeersKnowRequest: peer %s has %d < REQUESTED → veto", peerID, peerStatus)
+			log.Log("allLivePeersKnowRequest: peer %s vetoes (status %d)", peerID, peerStatus)
 			return false
 		}
 	}
-	log.Log("allLivePeersKnowRequest: ALL consensusPeers >= REQUESTED → OK")
+
+	log.Log("allLivePeersKnowRequest: all consensusPeers >= REQUESTED → ACTIVE")
 	return true
 }
 

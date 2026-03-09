@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	peerUpdateBroadcastPort = 15647 // Match vanilla example
-	snaphotBroadCastPort    = 12345 // Keep your snapshot port
+	peerPort     = 15657
+	snapshotPort = 15667
 )
 
 func RunNetworkNode(
@@ -29,15 +29,18 @@ func RunNetworkNode(
 	snapshotTx := make(chan NetworkSnapshot, 1)
 	snapshotRx := make(chan NetworkSnapshot)
 
-	peerTxEnable <- false
+	peerTxEnable <- true
+	// FIXED: Use same 'peerPort' for TX/RX
+	go peers.PeersTransmitter(peerPort, id, peerTxEnable) // no broadcastAddr arg
+	go peers.PeersReceiver(peerPort, peerUpdateCh)
 
-	go peers.Transmitter(peerUpdateBroadcastPort, id, peerTxEnable)
-	go peers.Receiver(peerUpdateBroadcastPort, peerUpdateCh)
+	// FIXED: Use same 'snapshotPort' for TX/RX
+	go bcast.BcastTransmitter(snapshotPort, snapshotTx)
+	go bcast.BcastReceiver(snapshotPort, snapshotRx)
 
-	go bcast.Transmitter(snaphotBroadCastPort, snapshotTx)
-	go bcast.Receiver(snaphotBroadCastPort, snapshotRx)
+	log.Log("Network %s: peerPort=%d snapPort=%d", id, peerPort, snapshotPort)
 
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
 	startupTimer := time.NewTimer(3 * time.Second)
@@ -133,18 +136,26 @@ func RunNetworkNode(
 				enableBroadcast()
 			}
 
-			removeLostPeers(knownStates, peerUpdate.Lost)
+			// Do NOT delete lost peers from knownStates — their snapshots persist
+			// so a restarting elevator can recover its prior state. livePeerIDs is
+			// the live-only gate; knownStates is the persistence store.
 
-			// Only update livePeerIDs if there are actual peers reported
 			if len(peerUpdate.Peers) > 0 {
-				livePeerIDs = make([]string, 0, len(peerUpdate.Peers)+1)
-				livePeerIDs = append(livePeerIDs, id)
+				seen := map[string]bool{id: true}
+				newLive := []string{id}
 				for _, peer := range peerUpdate.Peers {
-					livePeerIDs = append(livePeerIDs, peer)
+					if !seen[peer] {
+						seen[peer] = true
+						newLive = append(newLive, peer)
+					}
 				}
+				livePeerIDs = newLive
 				log.Log("livePeerIDs updated to %v", livePeerIDs)
 			} else {
-				log.Log("peerUpdate.Peers empty, keeping previous livePeerIDs=%v", livePeerIDs)
+				for _, lostID := range peerUpdate.Lost {
+					livePeerIDs = removeFromSlice(livePeerIDs, lostID)
+				}
+				log.Log("peerUpdate.Peers empty, livePeerIDs pruned to %v", livePeerIDs)
 			}
 
 			select {
@@ -232,14 +243,19 @@ func markHallButtonAsRequested(snapshot NetworkSnapshot, nodeID string, button e
 	return snapshot
 }
 
-func removeLostPeers(knownStates map[string]NetworkSnapshot, lostPeerIDs []string) {
-	for _, lostPeerID := range lostPeerIDs {
-		delete(knownStates, lostPeerID)
+// removeFromSlice returns a new slice with all occurrences of item removed.
+func removeFromSlice(slice []string, item string) []string {
+	out := make([]string, 0, len(slice))
+	for _, v := range slice {
+		if v != item {
+			out = append(out, v)
+		}
 	}
+	return out
 }
 
 func isAloneOnNetwork(peerUpdate peers.PeerUpdate) bool {
-	return len(peerUpdate.Peers) == 0
+	return len(peerUpdate.Peers) <= 1
 }
 
 func snapshotChanged(before, after NetworkSnapshot, id string) bool {
