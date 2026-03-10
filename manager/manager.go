@@ -69,9 +69,7 @@ func extractActiveElevatorStates(snapshot networkdriver.NetworkSnapshot, activeE
 		if !activeElevators[nodeID] {
 			continue
 		}
-		if elevatorState.Floor < 0 || elevatorState.Floor >= elevatorcontroller.NumFloors {
-			continue // skip elevators not yet at a valid floor
-		}
+
 		cabRequests := make([]bool, len(elevatorState.CabRequests))
 		for floor, requestState := range elevatorState.CabRequests {
 			cabRequests[floor] = networkdriver.RequestStateToBool(requestState)

@@ -40,7 +40,7 @@ func RunNetworkNode(
 
 	log.Log("Network %s: peerPort=%d snapPort=%d", id, peerPort, snapshotPort)
 
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 
 	startupTimer := time.NewTimer(3 * time.Second)
