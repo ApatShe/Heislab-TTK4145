@@ -1,6 +1,9 @@
 package elevatorcontroller
 
-import "Heislab/driver-go/elevio"
+import (
+	log "Heislab/Log"
+	"Heislab/driver-go/elevio"
+)
 
 type DirnBehaviourPair struct {
 	Direction elevio.MotorDirection
@@ -107,6 +110,7 @@ func RequestsClearAtCurrentFloor(elevator *Elevator) []elevio.ButtonEvent {
 
 // replaceHallRequests writes the Manager-assigned hall matrix into the elevator.
 func replaceHallRequests(elevator *Elevator, newRequests [][2]bool) {
+	log.Log("[FSM] Replacing hall request matrix %v with manager assignment: %v", elevator.HallRequests, newRequests)
 	for f := 0; f < NumFloors; f++ {
 		elevator.HallRequests[f][HallUp] = newRequests[f][HallUp]
 		elevator.HallRequests[f][HallDown] = newRequests[f][HallDown]

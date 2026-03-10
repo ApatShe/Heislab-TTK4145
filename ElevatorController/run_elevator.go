@@ -1,8 +1,8 @@
 package elevatorcontroller
 
 import (
+	log "Heislab/Log"
 	"Heislab/driver-go/elevio"
-	"fmt"
 )
 
 // RunElevator runs the elevator finite state machine.
@@ -49,7 +49,7 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 		}
 	}
 
-	fmt.Println("Elevator controller started!")
+	log.Log("Elevator controller started!")
 
 	for {
 		var served []elevio.ButtonEvent
@@ -57,11 +57,11 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 
 		select {
 		case btn := <-in.CabButton:
-			fmt.Printf("Cab button: Floor=%d\n", btn.Floor)
+			log.Log("Cab button: Floor=%d\n", btn.Floor)
 			served, commands = FsmOnCabRequest(elevator, btn.Floor)
 
 		case newHallRequests := <-in.HallRequests:
-			fmt.Printf("Hall request update from manager\n")
+			log.Log("Hall request update from manager\n")
 			served, commands = FsmOnHallRequestsUpdate(elevator, newHallRequests)
 
 		case floor := <-in.Floor:
@@ -74,7 +74,7 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 			// Motor stall detected — stop motor and return to idle.
 			// The HRA will re-assign requests once the elevator broadcasts
 			// its new idle state.
-			fmt.Println("Motor watchdog: stall detected, stopping motor")
+			log.Log("Motor watchdog: stall detected, stopping motor")
 			elevator.Direction = elevio.MD_Stop
 			elevator.Behaviour = EB_Idle
 			elevio.SetMotorDirection(elevio.MD_Stop)

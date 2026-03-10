@@ -1,8 +1,8 @@
 package elevatorcontroller
 
 import (
+	log "Heislab/Log"
 	"Heislab/driver-go/elevio"
-	"fmt"
 )
 
 // FsmActOnBehaviourPair writes direction+behaviour into elevator and returns
@@ -38,7 +38,7 @@ func FsmActOnBehaviourPair(elevator *Elevator, pair DirnBehaviourPair) ([]elevio
 // runs the HRA, achieves network consensus, and pushes back a hall-request
 // matrix via FsmOnHallRequestsUpdate.
 func FsmOnCabRequest(elevator *Elevator, btnFloor int) ([]elevio.ButtonEvent, []ElevatorCommand) {
-	fmt.Printf("\n\nFsmOnCabRequest(floor=%d)\n", btnFloor)
+	log.Log("[FSM] Cab request received, floor=%d\n", btnFloor)
 	ElevatorPrint(elevator)
 
 	var served []elevio.ButtonEvent
@@ -61,7 +61,7 @@ func FsmOnCabRequest(elevator *Elevator, btnFloor int) ([]elevio.ButtonEvent, []
 		served, commands = FsmActOnBehaviourPair(elevator, RequestsChooseDirection(elevator))
 	}
 
-	fmt.Println("\nNew state:")
+	log.Log("[FSM] New state:")
 	ElevatorPrint(elevator)
 	return served, commands
 }
@@ -70,12 +70,14 @@ func FsmOnCabRequest(elevator *Elevator, btnFloor int) ([]elevio.ButtonEvent, []
 // HRA-assigned matrix received from the manager after network consensus.
 // If the elevator is idle it acts immediately on any newly assigned requests.
 func FsmOnHallRequestsUpdate(elevator *Elevator, newRequests [][2]bool) ([]elevio.ButtonEvent, []ElevatorCommand) {
-	fmt.Printf("\n\nFsmOnHallRequestsUpdate()\n")
-	fmt.Printf("[FSM] HallRequestsUpdate called, floor=%d beh=%v requests=%v\n",
+	log.Log("[FSM] HallRequestsUpdate called, floor=%d beh=%v requests=%v\n",
 		elevator.Floor, elevator.Behaviour, newRequests)
 	ElevatorPrint(elevator)
 
 	replaceHallRequests(elevator, newRequests)
+
+	log.Log("[FSM] Elevator state after hall request update: floor=%d beh=%v requests=%v\n",
+		elevator.Floor, elevator.Behaviour, elevator.HallRequests)
 
 	var served []elevio.ButtonEvent
 	var commands []ElevatorCommand
@@ -95,13 +97,13 @@ func FsmOnHallRequestsUpdate(elevator *Elevator, newRequests [][2]bool) ([]elevi
 		}
 	}
 
-	fmt.Println("\nNew state:")
+	log.Log("[FSM] New state:")
 	ElevatorPrint(elevator)
 	return served, commands
 }
 
 func FsmOnFloorArrival(elevator *Elevator, newFloor int) ([]elevio.ButtonEvent, []ElevatorCommand) {
-	fmt.Printf("\n\nFsmOnFloorArrival(%d)\n", newFloor)
+	log.Log("[FSM] Floor arrival, floor=%d\n", newFloor)
 	ElevatorPrint(elevator)
 
 	elevator.Floor = newFloor
@@ -127,31 +129,31 @@ func FsmOnFloorArrival(elevator *Elevator, newFloor int) ([]elevio.ButtonEvent, 
 		// else: continue moving, nothing extra
 
 	default:
-		fmt.Printf("DEBUG: Not moving, no action\n")
+		log.Log("DEBUG: Not moving, no action\n")
 	}
 
-	fmt.Println("\nNew state:")
+	log.Log("[FSM] New state:")
 	ElevatorPrint(elevator)
 	return served, commands
 }
 
 // FsmOnDoorClose is called when the door-close event arrives from the door module.
 func FsmOnDoorClose(elevator *Elevator) ([]elevio.ButtonEvent, []ElevatorCommand) {
-	fmt.Printf("\n\nFsmOnDoorClose()\n")
+	log.Log("[FSM] Door close event received\n")
 	ElevatorPrint(elevator)
 
 	switch elevator.Behaviour {
 	case EB_DoorOpen:
 		served, commands := FsmActOnBehaviourPair(elevator, RequestsChooseDirection(elevator))
-		fmt.Println("\nNew state:")
+		log.Log("[FSM] New state:")
 		ElevatorPrint(elevator)
 		return served, commands
 
 	default:
-		fmt.Printf("DEBUG: Doors not open, no action\n")
+		log.Log("DEBUG: Doors not open, no action\n")
 	}
 
-	fmt.Println("\nNew state:")
+	log.Log("[FSM] New state:")
 	ElevatorPrint(elevator)
 	return nil, nil
 }
