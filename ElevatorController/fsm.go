@@ -107,9 +107,7 @@ func FsmOnFloorArrival(elevator *Elevator, newFloor int) ([]elevio.ButtonEvent, 
 	ElevatorPrint(elevator)
 
 	elevator.Floor = newFloor
-	commands := []ElevatorCommand{
-		CmdSetFloorIndicatorCmd{Floor: newFloor},
-	}
+	commands := []ElevatorCommand{}
 
 	var served []elevio.ButtonEvent
 

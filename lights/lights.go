@@ -31,7 +31,10 @@ func RunLights(in LightsIn) {
 		select {
 		case elevator := <-in.ElevatorState:
 			setCabLights(elevator.CabRequests[:])
-			elevio.SetFloorIndicator(elevator.Floor)
+
+			if elevator.Floor >= 0 {
+				elevio.SetFloorIndicator(elevator.Floor)
+			}
 
 		case hallRequests := <-in.HallRequests:
 			setHallLights(hallRequests)
@@ -54,4 +57,3 @@ func setHallLights(hallRequests [][2]bool) {
 		elevio.SetButtonLamp(elevio.BT_HallDown, floor, btnPair[elevatorcontroller.HallDown])
 	}
 }
-

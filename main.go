@@ -314,7 +314,7 @@ func main() {
 	doorClosedCh := make(chan struct{})
 
 	// -- Lights --
-	lightsStateCh := make(chan elevatorcontroller.Elevator, 1)
+	lightsStateCh := make(chan elevatorcontroller.Elevator, 16)
 	doorLampCh := make(chan bool, 1)
 
 	go routeButtons(hw.Buttons, cabOrderCh, hallButtonCh)

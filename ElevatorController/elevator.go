@@ -101,7 +101,6 @@ type ElevatorCommand interface {
 }
 
 type CmdSetMotorDirectionCmd struct{ Dir elevio.MotorDirection }
-type CmdSetFloorIndicatorCmd struct{ Floor int }
 type CmdDoorRequestCmd struct{}
 
 func (c CmdSetMotorDirectionCmd) execute(out ElevatorOut) {
@@ -114,10 +113,6 @@ func (c CmdSetMotorDirectionCmd) execute(out ElevatorOut) {
 		default:
 		}
 	}
-}
-
-func (c CmdSetFloorIndicatorCmd) execute(out ElevatorOut) {
-	elevio.SetFloorIndicator(c.Floor)
 }
 
 func (c CmdDoorRequestCmd) execute(out ElevatorOut) {
