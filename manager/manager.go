@@ -2,6 +2,7 @@ package manager
 
 import (
 	elevatorcontroller "Heislab/ElevatorController"
+	log "Heislab/Log"
 	"Heislab/Network/network/peers"
 	networkdriver "Heislab/NetworkDriver"
 )
@@ -14,17 +15,19 @@ type ManagerIn struct {
 
 // ManagerOut groups all channels that RunManager writes into.
 type ManagerOut struct {
-	HallRequests chan<- [][2]bool // HRA-assigned matrix → elevator
-	HallLights   chan<- [][2]bool // HRA-assigned matrix → lights
-	DoorInit     chan<- bool      // persistent door state → door module on first snapshot
+	CabRequests  chan<- []bool        // consensused cab requests → elevator FSM
+	HallRequests chan<- [][2]bool     // HRA-assigned matrix → elevator
+	Lights       chan<- RequestLights // HRA-assigned request matrix and active cabRequest → lights
+	DoorInit     chan<- bool          // persistent door state → door module on first snapshot
+}
+
+type RequestLights struct {
+	HallLights [][2]bool
+	CabLights  []bool
 }
 
 func hallRequestToHRAInput(snapshot networkdriver.NetworkSnapshot) [][2]bool {
 	hraInput := make([][2]bool, elevatorcontroller.NumFloors)
-
-	// We iterate through all nodes' hall requests in the snapshot.
-	// If ANY node has reached ACTIVE for a specific button, the HRA
-	// should treat that as a live order to be assigned.
 	for _, peerRequests := range snapshot.HallRequests {
 		if peerRequests == nil {
 			continue
@@ -39,6 +42,18 @@ func hallRequestToHRAInput(snapshot networkdriver.NetworkSnapshot) [][2]bool {
 		}
 	}
 	return hraInput
+}
+
+func cabLightsFromSnapshot(snapshot networkdriver.NetworkSnapshot, id string) []bool {
+	elevatorState, exists := snapshot.Elevators[id]
+	if !exists {
+		return nil
+	}
+	cabLights := make([]bool, len(elevatorState.CabRequests))
+	for floor, requestState := range elevatorState.CabRequests {
+		cabLights[floor] = networkdriver.RequestStateToBool(requestState)
+	}
+	return cabLights
 }
 
 // hallLightsFromSnapshot returns a lights matrix that is true for any button
@@ -69,6 +84,9 @@ func extractActiveElevatorStates(snapshot networkdriver.NetworkSnapshot, activeE
 		if !activeElevators[nodeID] {
 			continue
 		}
+		if elevatorState.Floor == -1 {
+			continue // not yet initialized, skip to avoid crashing HRA
+		}
 
 		cabRequests := make([]bool, len(elevatorState.CabRequests))
 		for floor, requestState := range elevatorState.CabRequests {
@@ -83,7 +101,6 @@ func extractActiveElevatorStates(snapshot networkdriver.NetworkSnapshot, activeE
 	}
 	return elevatorStates
 }
-
 func extractDesignatedHallRequests(delegatedHallRequests map[string][][2]bool, id string) [][2]bool {
 	if delegatedHallRequests == nil {
 		return nil
@@ -103,12 +120,24 @@ func hallRequestsEqual(incoming, last [][2]bool) bool {
 	return true
 }
 
+func cabRequestsEqual(incoming, last []bool) bool {
+	if len(incoming) != len(last) {
+		return false
+	}
+	for i := range incoming {
+		if incoming[i] != last[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func RunManager(in ManagerIn, out ManagerOut, id string) {
 	activeElevators := map[string]bool{id: true} // always treat self as active
 	//doorInitSent := false
 
-	var lastHallRequests [][2]bool
-	var lastHallLights [][2]bool
+	//var lastHallRequests [][2]bool
+	//var lastHallLights [][2]bool
 
 	for {
 		select {
@@ -121,40 +150,54 @@ func RunManager(in ManagerIn, out ManagerOut, id string) {
 			}
 
 		case snapshot := <-in.Snapshot:
+
+			log.Log("[Manager] Received snapshot iter=%d from node %s with %d elevators and hall requests: %v", snapshot.Iter, snapshot.NodeID, len(snapshot.Elevators), snapshot.HallRequests)
 			// Always add any node present in the snapshot as active
-			for nodeID := range snapshot.Elevators {
-				activeElevators[nodeID] = true
+
+			consensusCabRequests := snapshot.Elevators[id].CabRequests
+			consensusCabRequestsBool := make([]bool, len(consensusCabRequests))
+			for i, requestState := range consensusCabRequests {
+				consensusCabRequestsBool[i] = networkdriver.RequestStateToBool(requestState)
+			}
+			log.Log("[Manager] Sending Consensus cab requests to FSM for self: %v", consensusCabRequestsBool)
+			select {
+			case out.CabRequests <- consensusCabRequestsBool:
+			default:
 			}
 
 			consensusHallRequests := hallRequestToHRAInput(snapshot)
-
-			hallLights := hallLightsFromSnapshot(snapshot, activeElevators)
-			if !hallRequestsEqual(hallLights, lastHallLights) {
-				lastHallLights = hallLights
-				select {
-				case out.HallLights <- hallLights:
-				default:
-				}
-			}
 
 			hraInput := HRAInput{
 				HallRequests: consensusHallRequests,
 				States:       extractActiveElevatorStates(snapshot, activeElevators),
 			}
 
-			if len(hraInput.States) == 0 {
-				break
-			}
+			//if len(hraInput.States) == 0 {
+			//	break
+			//}
 
 			delegatedHallRequests := OutputHallRequestAssigner(hraInput)
 			designatedHallRequests := extractDesignatedHallRequests(delegatedHallRequests, id)
-			if designatedHallRequests != nil && !hallRequestsEqual(designatedHallRequests, lastHallRequests) {
-				lastHallRequests = designatedHallRequests
+			if designatedHallRequests != nil {
 				select {
 				case out.HallRequests <- designatedHallRequests:
 				default:
 				}
 			}
+
+			hallLights := hallLightsFromSnapshot(snapshot, activeElevators)
+			cabLights := cabLightsFromSnapshot(snapshot, id)
+
+			Lights := RequestLights{
+				HallLights: hallLights,
+				CabLights:  cabLights,
+			}
+
+			select {
+			case out.Lights <- Lights:
+			default:
+			}
+
 		}
 	}
 }

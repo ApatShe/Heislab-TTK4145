@@ -39,28 +39,26 @@ const (
 
 // NetworkNodeIn groups all channels that deliver events into RunNetworkNode.
 type NetworkNodeIn struct {
-	HallButton    <-chan elevio.ButtonEvent          // local hall button presses
-	ElevatorState <-chan elevatorcontroller.Elevator // local elevator FSM state
-	ServedHall    <-chan elevio.ButtonEvent          // served hall requests to clear
+	CabButton      <-chan elevio.ButtonEvent          // local cab button presses
+	HallButton     <-chan elevio.ButtonEvent          // local hall button presses
+	ElevatorState  <-chan elevatorcontroller.Elevator // local elevator FSM state
+	ServedRequests <-chan elevio.ButtonEvent          // served requests to clear
 }
 
 // NetworkNodeOut groups all channels that RunNetworkNode writes into.
 type NetworkNodeOut struct {
-	Snapshot   chan<- NetworkSnapshot  // consensus state → RunManager
-	PeerUpdate chan<- peers.PeerUpdate // peer list changes → RunManager
-	Init       chan<- struct{}         // safe-to-start signal → RunElevator
+	Snapshot        chan<- NetworkSnapshot  // consensus state → RunManager
+	PeerUpdate      chan<- peers.PeerUpdate // peer list changes → RunManager
+	InitCabRequests chan<- []bool           // safe-to-start signal → RunElevator
 }
 
-func LocalElevatorToElevatorState(elevator elevatorcontroller.Elevator) ElevatorState {
-	cabs := make([]RequestState, len(elevator.CabRequests))
-	for i, req := range elevator.CabRequests {
-		cabs[i] = boolToRequestState(req)
-	}
+func LocalElevatorToElevatorState(elevator elevatorcontroller.Elevator, cabRequests []RequestState) ElevatorState {
+
 	return ElevatorState{
 		Behaviour:   elevator.Behaviour.String(),
 		Floor:       elevator.Floor,
 		Direction:   elevatorcontroller.DirnToString(elevator.Direction),
-		CabRequests: cabs,
+		CabRequests: cabRequests,
 		DoorOpen:    elevator.Behaviour == elevatorcontroller.EB_DoorOpen,
 	}
 }

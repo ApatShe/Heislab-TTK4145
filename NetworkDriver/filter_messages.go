@@ -47,21 +47,29 @@ func returnValidState(local, received RequestState) RequestState {
 
 // mergeCabRequests merges a received cab request array into the local one.
 // Cab requests are node-local and should only be merged from the same node.
-func mergeCabRequests(local, received []RequestState, localID, receivedID string) []RequestState {
+func mergeCabRequests(local, received []RequestState, localID, receivedID, ownID string) []RequestState {
 	size := len(received)
 	if len(local) > size {
 		size = len(local)
 	}
+
 	merged := make([]RequestState, size)
+	for i := range merged {
+		merged[i] = INACTIVE // peers default to INACTIVE, not UNKNOWN
+	}
 	copy(merged, local)
 
-	if localID != receivedID {
+	// Allow merge if sender owns this entry, OR if this is our own entry
+	// being recovered from a peer's snapshot (restart recovery).
+	if localID != receivedID && localID != ownID {
 		return merged
 	}
 
 	for floor := range local {
-		if local[floor] == UNKNOWN {
-			merged[floor] = received[floor]
+		if localID == ownID && isUnResettingState(local[floor], received[floor]) {
+			merged[floor] = local[floor]
+		} else {
+			merged[floor] = returnValidState(local[floor], received[floor])
 		}
 	}
 	return merged
@@ -78,7 +86,6 @@ func copyHallRequests(src map[string][][2]RequestState) map[string][][2]RequestS
 	return dst
 }
 
-// mergePeerEntry applies the cyclic counter to a single peer's floor/button matrix.
 func mergePeerEntry(local, received [][2]RequestState, isOwnEntry bool) [][2]RequestState {
 	merged := make([][2]RequestState, len(received))
 	for floor := range received {
@@ -87,8 +94,9 @@ func mergePeerEntry(local, received [][2]RequestState, isOwnEntry bool) [][2]Req
 			if local != nil {
 				localState = local[floor][btn]
 			}
-
-			if isOwnEntry {
+			if isOwnEntry && shouldResetState(localState, received[floor][btn]) {
+				merged[floor][btn] = localState
+			} else if isUnResettingState(localState, received[floor][btn]) {
 				merged[floor][btn] = localState
 			} else {
 				merged[floor][btn] = returnValidState(localState, received[floor][btn])
@@ -121,30 +129,46 @@ func copyElevators(src map[string]ElevatorState) map[string]ElevatorState {
 func mergeElevators(local, received NetworkSnapshot) map[string]ElevatorState {
 	merged := copyElevators(local.Elevators)
 
-	// Iterate through EVERY elevator entry in the received snapshot.
-	// This allows a restarted node to find its own previous ID (and Cabs)
-	// inside a peer's snapshot.
+	log.Log("mergeElevators: received elevators=%v", received.Elevators)
+
 	for nodeID, receivedState := range received.Elevators {
 		localState, exists := local.Elevators[nodeID]
 
+		if receivedState.Floor == -1 {
+			log.Log("[mergeElevators] skipping uninitialized floor=-1 state from peer=%s", nodeID)
+			continue
+		}
 		var currentCabs []RequestState
 		if exists {
 			currentCabs = localState.CabRequests
 		}
+		log.Log("mergeElevators: merging cabRequests for nodeID=%s, %v (exists=%v)", nodeID, currentCabs, exists)
+		mergedCabs := mergeCabRequests(
+			currentCabs,
+			receivedState.CabRequests,
+			nodeID,
+			received.NodeID,
+			local.NodeID,
+		)
 
-		// Merge the states. If it's our own ID, mergeCabRequests will
-		// transition UNKNOWN -> ACTIVE/INACTIVE based on the peer's data.
-		merged[nodeID] = ElevatorState{
-			Behaviour: receivedState.Behaviour,
-			Floor:     receivedState.Floor,
-			Direction: receivedState.Direction,
-			DoorOpen:  receivedState.DoorOpen,
-			CabRequests: mergeCabRequests(
-				currentCabs,
-				receivedState.CabRequests,
-				nodeID, // The ID of the elevator being merged
-				nodeID, // The ID of the data source
-			),
+		// Motion state is ground truth from sensors — only the owner can update it.
+		// Peers may only contribute cab request recovery, nothing else.
+		if nodeID == received.NodeID {
+			merged[nodeID] = ElevatorState{
+				Behaviour:   receivedState.Behaviour,
+				Floor:       receivedState.Floor,
+				Direction:   receivedState.Direction,
+				DoorOpen:    receivedState.DoorOpen,
+				CabRequests: mergedCabs,
+			}
+		} else if exists {
+			merged[nodeID] = ElevatorState{
+				Behaviour:   localState.Behaviour,
+				Floor:       localState.Floor,
+				Direction:   localState.Direction,
+				DoorOpen:    localState.DoorOpen,
+				CabRequests: mergedCabs,
+			}
 		}
 	}
 	return merged
@@ -156,29 +180,37 @@ func FilteredMessage(local, received NetworkSnapshot) NetworkSnapshot {
 	merged.Elevators = mergeElevators(local, received)
 	merged.HallRequests = mergeHallRequests(local.HallRequests, received.HallRequests, local.NodeID)
 	log.Log("FilteredMessage: result hallRequests=%v", merged.HallRequests)
+	log.Log("FilteredMessage: result elevators=%v", merged.Elevators)
 	return merged
 }
 
 // shouldAdoptHallRequest returns true when own entry for floorIndex/buttonIndex
 // is INACTIVE and at least one peer has already reached REQUESTED.
 // This is the adoption predicate: case B of the INACTIVE→REQUESTED transition.
-func shouldAdoptHallRequest(snapshot NetworkSnapshot, floorIndex int, buttonIndex int) bool {
-	ownRequest := snapshot.HallRequests[snapshot.NodeID][floorIndex][buttonIndex]
-	return (ownRequest == UNKNOWN || ownRequest == INACTIVE) && isHallRequestKnownByAnyPeer(snapshot, floorIndex, buttonIndex)
-}
+//func shouldAdoptHallRequest(snapshot NetworkSnapshot, floorIndex int, buttonIndex int) bool {
+//	ownRequest := snapshot.HallRequests[snapshot.NodeID][floorIndex][buttonIndex]
+//	return (ownRequest == UNKNOWN || ownRequest == INACTIVE) && isHallRequestKnownByAnyPeer(snapshot, floorIndex, buttonIndex)
+//}
 
-// adoptHallRequestsFromPeers advances own hall-request entries to REQUESTED
-// for every floor/button where shouldAdoptHallRequest is true.
 func adoptHallRequestsFromPeers(snapshot NetworkSnapshot) NetworkSnapshot {
 	ownRequests := snapshot.HallRequests[snapshot.NodeID]
 	if ownRequests == nil {
 		return snapshot
 	}
-	for floorIndex := range ownRequests {
-		for buttonIndex := range ownRequests[floorIndex] {
-			if shouldAdoptHallRequest(snapshot, floorIndex, buttonIndex) {
-				log.Log("adoptHallRequestsFromPeers: floor=%d btn=%d adopted→REQUESTED", floorIndex, buttonIndex)
-				ownRequests[floorIndex][buttonIndex] = REQUESTED
+	for floor := range ownRequests {
+		for btn := range ownRequests[floor] {
+			if ownRequests[floor][btn] != INACTIVE {
+				continue
+			}
+			for peerID, peerRequests := range snapshot.HallRequests {
+				if peerID == snapshot.NodeID || peerRequests == nil {
+					continue
+				}
+				if peerRequests[floor][btn] == REQUESTED {
+					log.Log("adoptHallRequestsFromPeers: floor=%d btn=%d INACTIVE→REQUESTED (from peer=%s)", floor, btn, peerID)
+					ownRequests[floor][btn] = REQUESTED
+					break
+				}
 			}
 		}
 	}
@@ -189,7 +221,7 @@ func adoptHallRequestsFromPeers(snapshot NetworkSnapshot) NetworkSnapshot {
 // propagateResetsToOwn clears own ACTIVE entries to INACTIVE when the sender
 // of the received snapshot reports INACTIVE for that floor/button in its own entry.
 // This propagates served-request resets from the elevator that served them.
-func propagateResetsToOwn(snapshot NetworkSnapshot, received NetworkSnapshot) NetworkSnapshot {
+func propagateResetsToOwn(snapshot, received NetworkSnapshot) NetworkSnapshot {
 	if received.NodeID == snapshot.NodeID {
 		return snapshot
 	}
@@ -202,11 +234,11 @@ func propagateResetsToOwn(snapshot NetworkSnapshot, received NetworkSnapshot) Ne
 		return snapshot
 	}
 	changed := false
-	for f := range own {
-		for b := 0; b < 2; b++ {
-			if own[f][b] == ACTIVE && senderEntry[f][b] == INACTIVE {
-				log.Log("propagateResetsToOwn: floor=%d btn=%d ACTIVE→INACTIVE (reset by %s)", f, b, received.NodeID)
-				own[f][b] = INACTIVE
+	for floor := range own {
+		for button := 0; button < 2; button++ {
+			if own[floor][button] == ACTIVE && senderEntry[floor][button] == INACTIVE {
+				log.Log("propagateResetsToOwn: floor=%d btn=%d ACTIVE→INACTIVE (reset by %s)", floor, button, received.NodeID)
+				own[floor][button] = INACTIVE
 				changed = true
 			}
 		}
@@ -217,32 +249,65 @@ func propagateResetsToOwn(snapshot NetworkSnapshot, received NetworkSnapshot) Ne
 	return snapshot
 }
 
-// isHallRequestKnownByAnyPeer returns true when at least one peer (excluding
-// self) has reached exactly REQUESTED for floorIndex/buttonIndex.
-// Checking == REQUESTED (not >= REQUESTED) prevents re-adoption after serving:
-// a peer still at ACTIVE after the local node served should not trigger a re-raise.
-func isHallRequestKnownByAnyPeer(snapshot NetworkSnapshot, floorIndex int, buttonIndex int) bool {
-	for peerID, peerRequests := range snapshot.HallRequests {
-		if peerID == snapshot.NodeID {
-			continue
-		}
-		if peerRequests != nil && peerRequests[floorIndex][buttonIndex] == REQUESTED {
-			return true
-		}
-	}
-	return false
-}
+//func isHallRequestKnownByAnyPeer(snapshot NetworkSnapshot, floorIndex int, buttonIndex int) bool {
+//	for peerID, peerRequests := range snapshot.HallRequests {
+//		if peerID == snapshot.NodeID {
+//			continue
+//		}
+//		if peerRequests != nil && peerRequests[floorIndex][buttonIndex] >= REQUESTED {
+//			return true
+//		}
+//	}
+//	return false
+//}
 
-func allLivePeersKnowRequest(
+func allLivePeersKnowRequestedCabs(
 	snapshot NetworkSnapshot,
 	livePeerIDs []string,
 	knownStates map[string]NetworkSnapshot,
-	f, b int,
+	floor int,
 ) bool {
-	// consensusPeers = livePeerIDs ∩ knownStates (excluding self)
-	// livePeerIDs: currently online peers
-	// knownStates: persistent snapshots — includes dead peers, but they
-	//              won't appear in livePeerIDs so they never block consensus
+	consensusPeers := make([]string, 0)
+	for _, peerID := range livePeerIDs {
+		if peerID == snapshot.NodeID {
+			continue
+		}
+		if _, known := knownStates[peerID]; known {
+			consensusPeers = append(consensusPeers, peerID)
+		}
+	}
+	log.Log("allLivePeersKnowRequestedCabs: (floor=%d): livePeerIDs=%v consensusPeers=%v ownStatus=%d",
+		floor, livePeerIDs, consensusPeers, snapshot.Elevators[snapshot.NodeID].CabRequests[floor])
+
+	if len(consensusPeers) == 0 {
+		soloMode := len(livePeerIDs) <= 1
+		log.Log("allLivePeersKnowRequestedCabs : no consensusPeers, soloMode=%v → %v", soloMode, soloMode)
+		return soloMode
+	}
+
+	for _, peerID := range consensusPeers {
+		peerElev, ok := knownStates[peerID].Elevators[snapshot.NodeID]
+		if !ok {
+			log.Log("allLivePeersKnowRequestedCabs : peer=%s has no entry for nodeID=%s", peerID, snapshot.NodeID)
+			return false
+		}
+		peerStatus := peerElev.CabRequests[floor]
+		log.Log("allLivePeersKnowRequestedCabs : peer=%s status=%d (need >= REQUESTED=%d)", peerID, peerStatus, REQUESTED)
+		if peerStatus < REQUESTED {
+			log.Log("allLivePeersKnowRequestedCabs : peer %s vetoes (status %d)", peerID, peerStatus)
+			return false
+		}
+	}
+	log.Log("allLivePeersKnowRequestedCabs : all consensusPeers >= REQUESTED → ACTIVE")
+	return true
+}
+
+func allLivePeersKnowRequestedHall(
+	snapshot NetworkSnapshot,
+	livePeerIDs []string,
+	knownStates map[string]NetworkSnapshot,
+	floor, button int,
+) bool {
 	consensusPeers := make([]string, 0)
 	for _, peerID := range livePeerIDs {
 		if peerID == snapshot.NodeID {
@@ -253,28 +318,55 @@ func allLivePeersKnowRequest(
 		}
 	}
 
-	log.Log("allLivePeersKnowRequest(floor=%d btn=%d): livePeerIDs=%v consensusPeers=%v ownStatus=%d",
-		f, b, livePeerIDs, consensusPeers, snapshot.HallRequests[snapshot.NodeID][f][b])
+	log.Log("allLivePeersKnowRequestedHall(floor=%d btn=%d): livePeerIDs=%v consensusPeers=%v ownStatus=%d",
+		floor, button, livePeerIDs, consensusPeers, snapshot.HallRequests[snapshot.NodeID][floor][button])
 
-	// No intersection — either truly solo or peers not yet heard from.
-	// Only allow advance in genuine solo mode (self is the only live peer).
 	if len(consensusPeers) == 0 {
 		soloMode := len(livePeerIDs) <= 1
-		log.Log("allLivePeersKnowRequest: no consensusPeers, soloMode=%v → %v", soloMode, soloMode)
+		log.Log("allLivePeersKnowRequestedHall: no consensusPeers, soloMode=%v → %v", soloMode, soloMode)
 		return soloMode
 	}
 
 	for _, peerID := range consensusPeers {
-		peerStatus := snapshot.HallRequests[peerID][f][b]
-		log.Log("allLivePeersKnowRequest: peer=%s status=%d (need >= REQUESTED=%d)", peerID, peerStatus, REQUESTED)
+		peerEntry, ok := knownStates[peerID].HallRequests[peerID]
+		if !ok {
+			log.Log("allLivePeersKnowRequestedHall: peer=%s has no own entry", peerID)
+			return false
+		}
+		peerStatus := peerEntry[floor][button]
+		log.Log("allLivePeersKnowRequestedHall: peer=%s status=%d (need >= REQUESTED=%d)", peerID, peerStatus, REQUESTED)
 		if peerStatus < REQUESTED {
-			log.Log("allLivePeersKnowRequest: peer %s vetoes (status %d)", peerID, peerStatus)
+			log.Log("allLivePeersKnowRequestedHall: peer %s vetoes (status %d)", peerID, peerStatus)
 			return false
 		}
 	}
 
-	log.Log("allLivePeersKnowRequest: all consensusPeers >= REQUESTED → ACTIVE")
+	log.Log("allLivePeersKnowRequestedHall: all consensusPeers >= REQUESTED → ACTIVE")
 	return true
+}
+
+func AdvanceCabToActive(
+	snapshot NetworkSnapshot,
+	livePeerIDs []string,
+	knownStates map[string]NetworkSnapshot,
+) NetworkSnapshot {
+	elev, ok := snapshot.Elevators[snapshot.NodeID]
+	if !ok {
+		return snapshot
+	}
+	for floor, state := range elev.CabRequests {
+		if state == REQUESTED {
+			if allLivePeersKnowRequestedCabs(snapshot, livePeerIDs, knownStates, floor) {
+				log.Log("AdvanceCabToActive: floor=%d REQUESTED→ACTIVE peers=%v", floor, livePeerIDs)
+				elev.CabRequests[floor] = ACTIVE
+
+			} else {
+				log.Log("AdvanceCabToActive: floor=%d REQUESTED but peers not ready peers=%v", floor, livePeerIDs)
+			}
+		}
+	}
+	snapshot.Elevators[snapshot.NodeID] = elev
+	return snapshot
 }
 
 // AdvanceToActive promotes own hall requests from REQUESTED to ACTIVE for every
@@ -282,7 +374,7 @@ func allLivePeersKnowRequest(
 // Requiring full peer consensus before going ACTIVE ensures propagateResetsToOwn
 // is never triggered by a peer that is simply unaware of the request.
 // filter_message.go
-func AdvanceToActive(
+func AdvanceHallToActive(
 	snapshot NetworkSnapshot,
 	livePeerIDs []string,
 	knownStates map[string]NetworkSnapshot,
@@ -294,7 +386,7 @@ func AdvanceToActive(
 	for f := range ownRequests {
 		for b := 0; b < 2; b++ {
 			if ownRequests[f][b] == REQUESTED {
-				if allLivePeersKnowRequest(snapshot, livePeerIDs, knownStates, f, b) {
+				if allLivePeersKnowRequestedHall(snapshot, livePeerIDs, knownStates, f, b) {
 					log.Log("AdvanceToActive: floor=%d btn=%d REQUESTED→ACTIVE peers=%v", f, b, livePeerIDs)
 					ownRequests[f][b] = ACTIVE
 				} else {
@@ -302,6 +394,7 @@ func AdvanceToActive(
 				}
 			}
 		}
+
 	}
 	snapshot.HallRequests[snapshot.NodeID] = ownRequests
 	return snapshot

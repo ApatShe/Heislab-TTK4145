@@ -3,6 +3,7 @@ package lights
 import (
 	elevatorcontroller "Heislab/ElevatorController"
 	"Heislab/driver-go/elevio"
+	"Heislab/manager"
 )
 
 // RunLights is the single point of contact for all button and indicator lamps.
@@ -22,7 +23,7 @@ import (
 // LightsIn groups all channels that deliver display-state updates into RunLights.
 type LightsIn struct {
 	ElevatorState <-chan elevatorcontroller.Elevator
-	HallRequests  <-chan [][2]bool
+	RequestLights <-chan manager.RequestLights
 	DoorLamp      <-chan bool
 }
 
@@ -30,14 +31,14 @@ func RunLights(in LightsIn) {
 	for {
 		select {
 		case elevator := <-in.ElevatorState:
-			setCabLights(elevator.CabRequests[:])
 
 			if elevator.Floor >= 0 {
 				elevio.SetFloorIndicator(elevator.Floor)
 			}
 
-		case hallRequests := <-in.HallRequests:
-			setHallLights(hallRequests)
+		case lights := <-in.RequestLights:
+			setHallLights(lights.HallLights)
+			setCabLights(lights.CabLights)
 
 		case open := <-in.DoorLamp:
 			elevio.SetDoorOpenLamp(open)

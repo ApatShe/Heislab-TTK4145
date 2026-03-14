@@ -54,45 +54,46 @@ type Elevator struct {
 // Inputs arrive from: hardware polling, the manager (HRA output), the door
 // module, the motor watchdog, and the network node (init signal).
 type ElevatorIn struct {
-	Floor        <-chan int
-	CabButton    <-chan elevio.ButtonEvent
-	HallRequests <-chan [][2]bool
-	DoorClosed   <-chan struct{}
-	MotorStall   <-chan struct{}
-	Init         <-chan struct{}
+	Floor           <-chan int
+	CabRequests     <-chan []bool
+	HallRequests    <-chan [][2]bool
+	DoorClosed      <-chan struct{}
+	MotorStall      <-chan struct{}
+	InitCabRequests <-chan []bool
 }
 
 // ElevatorOut groups all channels that RunElevator writes into.
 type ElevatorOut struct {
 	NetworkState    chan<- Elevator           // broadcast to RunNetworkNode
 	LightsState     chan<- Elevator           // broadcast to RunLights
-	ServedHall      chan<- elevio.ButtonEvent // cleared hall requests → RunNetworkNode
+	ServedRequests  chan<- elevio.ButtonEvent // cleared hall requests → RunNetworkNode
 	DoorOpen        chan<- struct{}           // open-door signal → RunDoor
 	ResetMotorTimer chan<- struct{}           // keep motor watchdog alive
 	StopMotorTimer  chan<- struct{}           // disarm motor watchdog when motor stops
 }
 
-func ElevatorUninitialized() *Elevator {
+func ElevatorUninitialized(cabRequests [NumFloors]bool) *Elevator {
 	return &Elevator{
-		Floor:     -1,
-		Direction: elevio.MD_Stop,
-		Behaviour: EB_Idle,
-		Config:    Config{DoorOpenDuration: 3 * time.Second},
+		Floor:       elevio.GetFloor(),
+		Direction:   elevio.MD_Stop,
+		Behaviour:   EB_Idle,
+		Config:      Config{DoorOpenDuration: 3 * time.Second},
+		CabRequests: cabRequests,
 	}
 }
 
 // InitBetweenFloors moves the motor down until a floor is reached and returns
 // the initial elevator state together with the door-open duration for use by
 // the door timer.
-func InitBetweenFloors() (Elevator, time.Duration) {
-	elevator := ElevatorUninitialized()
-	if elevio.GetFloor() == -1 {
-		elevio.SetMotorDirection(elevio.MD_Down)
-		elevator.Direction = elevio.MD_Down
-		elevator.Behaviour = EB_Moving
-	}
-	return *elevator, elevator.Config.DoorOpenDuration
-}
+//func InitBetweenFloors() (Elevator, time.Duration) {
+//	elevator := ElevatorUninitialized()
+//	if elevio.GetFloor() == -1 {
+//		elevio.SetMotorDirection(elevio.MD_Down)
+//		elevator.Direction = elevio.MD_Down
+//		elevator.Behaviour = EB_Moving
+//	}
+//	return *elevator, elevator.Config.DoorOpenDuration
+//}
 
 // ---- Command pattern ----
 

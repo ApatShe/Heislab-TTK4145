@@ -73,7 +73,10 @@ func CabRequestShouldClearImmediately(elevator *Elevator, btnFloor int) bool {
 func RequestsClearAtCurrentFloor(elevator *Elevator) []elevio.ButtonEvent {
 	served := []elevio.ButtonEvent{}
 
-	elevator.CabRequests[elevator.Floor] = false
+	if elevator.CabRequests[elevator.Floor] {
+		elevator.CabRequests[elevator.Floor] = false
+		served = append(served, elevio.ButtonEvent{Floor: elevator.Floor, Button: elevio.BT_Cab})
+	}
 
 	switch elevator.Direction {
 	case elevio.MD_Up:
@@ -104,13 +107,12 @@ func RequestsClearAtCurrentFloor(elevator *Elevator) []elevio.ButtonEvent {
 			served = append(served, elevio.ButtonEvent{Floor: elevator.Floor, Button: elevio.BT_HallDown})
 		}
 	}
-
 	return served
 }
 
 // replaceHallRequests writes the Manager-assigned hall matrix into the elevator.
 func replaceHallRequests(elevator *Elevator, newRequests [][2]bool) {
-	log.Log("[FSM] Replacing hall request matrix %v with manager assignment: %v", elevator.HallRequests, newRequests)
+	// log.Log("[FSM] Replacing hall request matrix %v with manager assignment: %v", elevator.HallRequests, newRequests)
 	for f := 0; f < NumFloors; f++ {
 		elevator.HallRequests[f][HallUp] = newRequests[f][HallUp]
 		elevator.HallRequests[f][HallDown] = newRequests[f][HallDown]
@@ -118,6 +120,7 @@ func replaceHallRequests(elevator *Elevator, newRequests [][2]bool) {
 }
 
 func RequestsChooseDirection(elevator *Elevator) DirnBehaviourPair {
+	log.Log("[FSM] ChooseDirection: floor=%d dir=%s above=%v below=%v here=%v", elevator.Floor, DirnToString(elevator.Direction), RequestsAbove(elevator), RequestsBelow(elevator), RequestsHere(elevator))
 	switch elevator.Direction {
 	case elevio.MD_Up:
 		if RequestsAbove(elevator) {

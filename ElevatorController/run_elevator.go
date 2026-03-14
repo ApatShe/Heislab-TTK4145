@@ -19,17 +19,32 @@ import (
 func RunElevator(in ElevatorIn, out ElevatorOut) {
 	// Block until NetworkNode signals that peer state has been recovered.
 	// This prevents the motor from starting before cab requests are known.
-	<-in.Init
+	recoveredCabRequests := <-in.InitCabRequests
+	log.Log("[INIT] elevator uninitialized, recovered/initial cab requests: %v", recoveredCabRequests)
 
-	elevator := ElevatorUninitialized()
-	if elevio.GetFloor() == -1 {
-		elevio.SetMotorDirection(elevio.MD_Down)
-		elevator.Direction = elevio.MD_Down
-		elevator.Behaviour = EB_Moving
-		out.ResetMotorTimer <- struct{}{}
+	var cabArray [NumFloors]bool
+	for i, v := range recoveredCabRequests {
+		if i < NumFloors {
+			cabArray[i] = v
+		}
 	}
 
+	elevator := ElevatorUninitialized(cabArray)
+		if elevio.GetFloor() == -1 {
+    		elevio.SetMotorDirection(elevio.MD_Down)
+    		elevator.Direction = elevio.MD_Down
+    		elevator.Behaviour = EB_Moving
+    		out.ResetMotorTimer <- struct{}{}
+		}
+
 	broadcastState := func() {
+		if elevator.Floor == -1 {
+			select {
+			case out.LightsState <- *elevator:
+			default:
+			}
+			return
+		}
 		select {
 		case out.NetworkState <- *elevator:
 		default:
@@ -40,28 +55,27 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 		}
 	}
 
-	reportServedHallRequests := func(served []elevio.ButtonEvent) {
+	reportServedRequests := func(served []elevio.ButtonEvent) {
 		for _, btn := range served {
-			isHallButton := btn.Button == elevio.BT_HallUp || btn.Button == elevio.BT_HallDown
-			if isHallButton {
-				out.ServedHall <- btn // blocking: this MUST reach the manager
-			}
+			log.Log("[SERVED] reporting served request: floor=%d btn=%d", btn.Floor, btn.Button)
+			out.ServedRequests <- btn
 		}
 	}
 
-	log.Log("Elevator controller started!")
+	// log.Log("Elevator controller started!")
 
 	for {
 		var served []elevio.ButtonEvent
 		var commands []ElevatorCommand
 
 		select {
-		case btn := <-in.CabButton:
-			log.Log("Cab button: Floor=%d\n", btn.Floor)
-			served, commands = FsmOnCabRequest(elevator, btn.Floor)
+		case newCabRequest := <-in.CabRequests:
+			log.Log("Manager provided FSM CabRequest %v \n", newCabRequest)
+			served, commands = FsmOnCabRequests(elevator, newCabRequest)
+			log.Log("FSM served cab buttons: %v, new state: %v\n", served, elevator)
 
 		case newHallRequests := <-in.HallRequests:
-			log.Log("Hall request update from manager\n")
+			// log.Log("Hall request update from manager\n")
 			served, commands = FsmOnHallRequestsUpdate(elevator, newHallRequests)
 
 		case floor := <-in.Floor:
@@ -74,7 +88,7 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 			// Motor stall detected — stop motor and return to idle.
 			// The HRA will re-assign requests once the elevator broadcasts
 			// its new idle state.
-			log.Log("Motor watchdog: stall detected, stopping motor")
+			// log.Log("Motor watchdog: stall detected, stopping motor")
 			elevator.Direction = elevio.MD_Stop
 			elevator.Behaviour = EB_Idle
 			elevio.SetMotorDirection(elevio.MD_Stop)
@@ -84,7 +98,7 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 			}
 		}
 
-		reportServedHallRequests(served)
+		reportServedRequests(served)
 		executeCommands(commands, out)
 		broadcastState()
 	}
