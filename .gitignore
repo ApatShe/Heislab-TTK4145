@@ -6,7 +6,9 @@
 *.dylib
 main
 driver
-network
+
+#log files
+*.log
 
 # Go test files
 *.test

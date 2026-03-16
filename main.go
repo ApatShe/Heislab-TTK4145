@@ -2,199 +2,367 @@ package main
 
 import (
 	elevatorcontroller "Heislab/ElevatorController"
+	door "Heislab/Hardware"
+	"Heislab/Network/network/bcast"
 	"Heislab/Network/network/localip"
+	"Heislab/Network/network/peers"
 	networkdriver "Heislab/NetworkDriver"
 	"Heislab/driver-go/elevio"
+	"Heislab/lights"
+	"Heislab/manager"
 	"Heislab/timer"
 	"flag"
 	"fmt"
+	"net"
 	"strconv"
 	"time"
 )
 
+// ---- Configuration -------------------------------------------------------
+
+type NodeConfig struct {
+	Port           int
+	PeerRXPort     int
+	SnapshotRXPort int
+	ID             string
+	LocalMode      bool
+}
+
 const (
 	defaultElevatorPort = 15657
-	obstructionTimeout  = time.Second * 10
-	motorTimeout        = time.Second * 10
+	DOOR_OPEN_DURATION  = 3 * time.Second
+	obstructionTimeout  = 10 * time.Second
+	motorTimeout        = 10 * time.Second
 )
 
-// Problems arising during FAT and other testing
-// - How to test disconnect :sad
-//   we make at home version
+func parseFlags() NodeConfig {
+	var cfg NodeConfig
+	flag.IntVar(&cfg.Port, "port", defaultElevatorPort, "Simulator TCP port") // Unique per instance
+	flag.StringVar(&cfg.ID, "id", resolveLocalIP(), "Network node id")
+	flag.BoolVar(&cfg.LocalMode, "local", false, "Use subnet broadcast")
+	flag.Parse()
 
-// TODO: Final todo list before FAT:
-// - Convert door into its own process ✓
-// - Fully implement obstruction switch and motor blockage timers ✓
-// - Change elevator state sending from continuous to diff ✓
-// - Change peer list sending from continuous to diff ✓
-// - Implement virtual state for pending requests ✓
-// - Fix the request assigner ✓
-// - Do a *lot* more testing with packet loss, both working and not working
-// - Make the hardwareCommands solution cleaner [?]
-// - Gather everything into one repo ✓
-// - Review the structure of elevalgo ✓
-// - Read the project spec completely, and verify that everything works
-// - Do test FAT
+	// FIXED: Same for all instances
+	cfg.PeerRXPort = 15657     // All RX peer heartbeats here
+	cfg.SnapshotRXPort = 15667 // All RX snapshots here
 
-// A problem with packet loss:
-// -----------------------------
-// If there is high packet loss and an elevator disconnects, the other two elevators
-// may take requests which haven't been fully acked. This can happen if elevator 1
-// takes a request while elevator 3 is "disconnected", elevator 1 then detects that
-// only elevator 2 needs to ack, which happens, and then elevator 1 takes the request
-// with only an ack from elevator 2. If elevator 2 then dies, the request has not been
-// backed up
-// One reason why this may potentially not be such a huge problem is that
-// each elevator broadcasts its state either way, so there is a large chance
-// that elevator 3 will pick up that elevator 1 is taking the request anyways, and then
-// if elevator 1 dies, elevator 3 can take over / back up the request
+	return cfg
+}
 
-// But in general packet loss will ravage our elevator system
-// :DD
-func main() {
-
-	//select {}
-	const (
-		defaultElevatorPort = 15657
-		obstructionTimeout  = time.Second * 10
-		motorTimeout        = time.Second * 10
-	)
-
-	// ---- Flags ----
-	var port int
-	var id string
-
-	//-----Set machine specific id ----
-	id, err := localip.LocalIP()
+func resolveLocalIP() string {
+	ip, err := localip.LocalIP()
 	if err != nil {
 		panic(fmt.Sprintf("could not resolve local IP: %v", err))
 	}
+	return ip
+}
 
-	fmt.Printf("Starting node with id: %s\n", id)
-	//flag.IntVar(&port, "port", defaultElevatorPort, "Elevator server port")
-	//flag.StringVar(&id, "id", "", "Network node id")
-	//fmt.Println("Started!")
-
-	flag.Parse()
-
-	// // ---- Initialize elevator ----
-	elevio.Init("localhost:"+strconv.Itoa(port), elevatorcontroller.NumFloors)
-	//elevatorcontroller.InitFsm()
-	initElevator, doorOpenDuration := elevatorcontroller.InitBetweenFloors()
-
-	// ---- Initialize hardware communication ----
-	buttonEventChan := make(chan elevio.ButtonEvent, 1)
-	floorChan := make(chan int)
-	obstructionChan := make(chan bool)
-
-	go elevio.PollButtons(buttonEventChan)
-	go elevio.PollFloorSensor(floorChan)
-	go elevio.PollObstructionSwitch(obstructionChan)
-
-	obstructionInit := <-obstructionChan
-
-	// ---- Initialize timers ----
-	// Door timer
-	resetDoorTimerChan := make(chan int)
-	stopDoorTimerChan := make(chan int)
-	doorTimeoutChan := make(chan int)
-	go timer.RunTimer(resetDoorTimerChan, stopDoorTimerChan, doorTimeoutChan, doorOpenDuration, false, "Door timer")
-
-	// Obstruction timer
-	resetObstructionTimerChan := make(chan int)
-	stopObstructionTimerChan := make(chan int)
-	obstructionTimeoutChan := make(chan int)
-	go timer.RunTimer(resetObstructionTimerChan, stopObstructionTimerChan, obstructionTimeoutChan, obstructionTimeout, true, "Obstruction timer")
-
-	// Motor timer
-	resetMotorTimerChan := make(chan int)
-	stopMotorTimerChan := make(chan int)
-	motorTimeoutChan := make(chan int)
-	go timer.RunTimer(resetMotorTimerChan, stopMotorTimerChan, motorTimeoutChan, motorTimeout, true, "Motor timer")
-
-	// ---- Networking node communication ----
-	// TODO: Try unbuffering some of these channels and see what happens
-	orderChan := make(chan elevio.ButtonEvent, 1)
-	elevatorStateChan := make(chan elevatorcontroller.Elevator, 1)
-	peerStateChan := make(chan []networkdriver.NetworkSnapshot, 1)
-
-	// ---- Door communication ----
-	doorRequestChan := make(chan int)
-	doorCloseChan := make(chan int)
-
-	// ---- Lights communication
-	lightsElevatorStateChan := make(chan elevatorcontroller.Elevator, 1)
-
-	// ---- Manager communication ----
-
-	// ---- ELevator communication ----
-	motorChan := make(chan elevio.MotorDirection, 1)
-	doorLampChan := make(chan bool, 1)
-	cabLampChan := make(chan elevio.ButtonEvent, 1)
-	floorLampChan := make(chan int, 1)
-	hallButtonChan := make(chan elevio.ButtonEvent, 1)
-
-	out := elevatorcontroller.ElevatorOutputChans{
-		MotorChan:      motorChan,
-		DoorLampChan:   doorLampChan,
-		CabLampChan:    cabLampChan,
-		FloorLampChan:  floorLampChan,
-		HallButtonChan: hallButtonChan,
-		StateChan:      elevatorStateChan,
+func configureNetwork(cfg NodeConfig) {
+	if cfg.LocalMode {
+		addr := subnetBroadcastAddr(resolveLocalIP())
+		fmt.Printf("[local mode] using broadcast address %s\n", addr)
+		bcast.SetBroadcastAddr(addr)
+		peers.SetBroadcastAddr(addr)
 	}
+	fmt.Printf("Starting node id=%s port=%d\n", cfg.ID, cfg.Port)
+}
 
-	go elevatorcontroller.RunElevator(drv_buttons, drv_floors, drv_obstr, drv_stop, hallRequestChan, out)
+// ---- Hardware ------------------------------------------------------------
 
-	// ---- Disconnect ----
-	disconnectChan := make(chan int, 1)
+// HardwareChannels carries raw event streams from the elevator I/O pollers.
+type HardwareChannels struct {
+	Buttons         chan elevio.ButtonEvent
+	Floor           chan int
+	Obstruction     chan bool
+	ObstructionInit bool
+}
 
-	// ---- Spawn core threads: networking, elevator, door and lights ----
+func initHardware(port int) {
+	elevio.Init("localhost:"+strconv.Itoa(port), elevatorcontroller.NumFloors)
+}
+
+func startHardwarePolling() HardwareChannels {
+	hw := HardwareChannels{
+		Buttons:     make(chan elevio.ButtonEvent, 1),
+		Floor:       make(chan int),
+		Obstruction: make(chan bool),
+	}
+	go elevio.PollButtons(hw.Buttons)
+	go elevio.PollFloorSensor(hw.Floor)
+	go elevio.PollObstructionSwitch(hw.Obstruction)
+
+	// Sample once — default false if switch has not fired yet.
+	select {
+	case hw.ObstructionInit = <-hw.Obstruction:
+	default:
+	}
+	return hw
+}
+
+// ---- Timers and watchdogs ------------------------------------------------
+
+type DoorTimer struct {
+	Reset   chan struct{}
+	Stop    chan struct{}
+	Expired chan struct{}
+}
+
+type ObstructionWatchdog struct {
+	Reset chan struct{}
+	Stop  chan struct{}
+}
+
+type MotorWatchdog struct {
+	Reset chan struct{}
+	Stop  chan struct{}
+	Stall chan struct{}
+}
+
+func newDoorTimer(duration time.Duration) DoorTimer {
+	t := DoorTimer{
+		Reset:   make(chan struct{}),
+		Stop:    make(chan struct{}),
+		Expired: make(chan struct{}, 1),
+	}
+	go timer.RunTimer(t.Reset, t.Stop, t.Expired, duration, false, "Door Timer")
+	return t
+}
+
+func newObstructionWatchdog() ObstructionWatchdog {
+	w := ObstructionWatchdog{
+		Reset: make(chan struct{}),
+		Stop:  make(chan struct{}),
+	}
+	go timer.RunTimer(w.Reset, w.Stop, nil, obstructionTimeout, true, "Obstruction Watchdog")
+	return w
+}
+
+func newMotorWatchdog() MotorWatchdog {
+	w := MotorWatchdog{
+		Reset: make(chan struct{}),
+		Stop:  make(chan struct{}),
+		Stall: make(chan struct{}, 1),
+	}
+	go timer.RunTimer(w.Reset, w.Stop, w.Stall, motorTimeout, false, "Motor Watchdog")
+	return w
+}
+
+// ---- Button routing ------------------------------------------------------
+
+// routeButtons splits the unified hardware button stream into cab (local) and
+// hall (network) streams. Receiving the event IS the message.
+func routeButtons(src <-chan elevio.ButtonEvent, cab, hall chan<- elevio.ButtonEvent) {
+	for btn := range src {
+		if btn.Button == elevio.BT_Cab {
+			cab <- btn
+		} else {
+			hall <- btn
+		}
+	}
+}
+
+// ---- Subsystem launch ----------------------------------------------------
+
+func launchNetworkNode(
+	id string,
+	cabButtonIn chan elevio.ButtonEvent,
+	hallButtonIn chan elevio.ButtonEvent,
+	elevatorStateIn chan elevatorcontroller.Elevator,
+	servedRequestsIn chan elevio.ButtonEvent,
+	snapshotOut chan networkdriver.NetworkSnapshot,
+	peerUpdateOut chan peers.PeerUpdate,
+	initCabRequestsOut chan []bool,
+) {
 	go networkdriver.RunNetworkNode(
-		buttonEventChan,
-		elevatorStateChan,
-		orderChan,
-		peerStateChan,
-		disconnectChan,
-		initElevator,
+		networkdriver.NetworkNodeIn{
+			CabButton:      cabButtonIn,
+			HallButton:     hallButtonIn,
+			ElevatorState:  elevatorStateIn,
+			ServedRequests: servedRequestsIn,
+		},
+		networkdriver.NetworkNodeOut{
+			Snapshot:        snapshotOut,
+			PeerUpdate:      peerUpdateOut,
+			InitCabRequests: initCabRequestsOut,
+		},
 		id,
 	)
+}
 
-	go networkdriver.RunManager(
-		peerStateChan,     // ← consumes snapshot
-		elevatorStateChan, // ← consumes local elevator state
-		orderChan,
-		peerStateChan, // ← fans out to lights
-		disconnectChan,
+func launchManager(
+	id string,
+	snapshotIn chan networkdriver.NetworkSnapshot,
+	peerUpdateIn chan peers.PeerUpdate,
+	cabRequestOut chan []bool,
+	hallRequestOut chan [][2]bool,
+	LightsOut chan manager.RequestLights,
+	doorInitOut chan bool,
+) {
+	go manager.RunManager(
+		manager.ManagerIn{
+			Snapshot:   snapshotIn,
+			PeerUpdate: peerUpdateIn,
+		},
+		manager.ManagerOut{
+			CabRequests:  cabRequestOut,
+			HallRequests: hallRequestOut,
+			Lights:       LightsOut,
+			DoorInit:     doorInitOut,
+		},
+		id,
 	)
+}
 
+func launchElevatorFSM(
+	hw HardwareChannels,
+	motorWatchdog MotorWatchdog,
+	cabRequestFromManager chan []bool,
+	hallRequestIn chan [][2]bool,
+	doorClosedIn chan struct{},
+	initCabRequestsIn chan []bool,
+	elevatorStateOut chan elevatorcontroller.Elevator,
+	lightsStateOut chan elevatorcontroller.Elevator,
+	servedRequestsOut chan elevio.ButtonEvent,
+	doorOpenReqOut chan struct{},
+) {
 	go elevatorcontroller.RunElevator(
-		floorChan,
-		orderChan,
-		doorCloseChan,
-		doorRequestChan,
-		lightsElevatorStateChan,
-		elevatorStateChan,
-		resetMotorTimerChan,
-		stopMotorTimerChan,
+		elevatorcontroller.ElevatorIn{
+			Floor:           hw.Floor,
+			CabRequests:     cabRequestFromManager,
+			HallRequests:    hallRequestIn,
+			DoorClosed:      doorClosedIn,
+			MotorStall:      motorWatchdog.Stall,
+			InitCabRequests: initCabRequestsIn,
+		},
+		elevatorcontroller.ElevatorOut{
+			NetworkState:    elevatorStateOut,
+			LightsState:     lightsStateOut,
+			ServedRequests:  servedRequestsOut,
+			DoorOpen:        doorOpenReqOut,
+			ResetMotorTimer: motorWatchdog.Reset,
+			StopMotorTimer:  motorWatchdog.Stop,
+		},
 	)
+}
 
+func launchDoor(
+	hw HardwareChannels,
+	doorTimer DoorTimer,
+	obstructionWatchdog ObstructionWatchdog,
+	doorOpenReqIn chan struct{},
+	doorInitIn chan bool,
+	doorClosedOut chan struct{},
+	doorLampOut chan bool,
+) {
 	go door.RunDoor(
-		obstructionChan,
-		doorTimeoutChan,
-		doorRequestChan,
-		doorCloseChan,
-		resetDoorTimerChan,
-		resetObstructionTimerChan,
-		stopObstructionTimerChan,
-		obstructionInit,
+		door.DoorIn{
+			Obstruction:          hw.Obstruction,
+			TimerExpired:         doorTimer.Expired,
+			OpenRequest:          doorOpenReqIn,
+			NetworkDoorOpenState: doorInitIn,
+		},
+		door.DoorOut{
+			Closed:                   doorClosedOut,
+			Lamp:                     doorLampOut,
+			ResetTimer:               doorTimer.Reset,
+			ResetObstructionWatchdog: obstructionWatchdog.Reset,
+			StopObstructionWatchdog:  obstructionWatchdog.Stop,
+		},
+		hw.ObstructionInit,
 	)
+}
 
-	go lights.RunLights(lightsElevatorStateChan, peerStateChan)
+func launchLights(
+	lightsStateIn chan elevatorcontroller.Elevator,
+	Lights chan manager.RequestLights,
+	doorLampIn chan bool,
+) {
+	go lights.RunLights(lights.LightsIn{
+		ElevatorState: lightsStateIn,
+		RequestLights: Lights,
+		DoorLamp:      doorLampIn,
+	})
+}
 
-	go disconnector.RunDisconnector(disconnectChan)
+// ---- Entry point ---------------------------------------------------------
 
-	for {
-		time.Sleep(time.Second)
+func main() {
+	cfg := parseFlags()
+	configureNetwork(cfg)
+
+	initHardware(cfg.Port)
+	hw := startHardwarePolling()
+
+	doorTimer := newDoorTimer(DOOR_OPEN_DURATION)
+	obstructionWatchdog := newObstructionWatchdog()
+	motorWatchdog := newMotorWatchdog()
+
+	// -- Network node channels --
+	hallButtonCh := make(chan elevio.ButtonEvent, 1)
+	elevatorStateCh := make(chan elevatorcontroller.Elevator, 1)
+	servedRequestsCh := make(chan elevio.ButtonEvent, 4)
+	snapshotCh := make(chan networkdriver.NetworkSnapshot, 1)
+	peerUpdateCh := make(chan peers.PeerUpdate, 1)
+	initCabRequestsCh := make(chan []bool, 1)
+
+	// -- Manager channels --
+	cabRequestCh := make(chan []bool, 1)
+	hallRequestCh := make(chan [][2]bool, 1)
+	LightsOut := make(chan manager.RequestLights, 1)
+	doorInitCh := make(chan bool, 1)
+
+	// -- Elevator FSM ↔ Door --
+	cabOrderCh := make(chan elevio.ButtonEvent, 1)
+	doorOpenReqCh := make(chan struct{})
+	doorClosedCh := make(chan struct{})
+
+	// -- Lights --
+	lightsStateCh := make(chan elevatorcontroller.Elevator, 16)
+	doorLampCh := make(chan bool, 1)
+
+	go routeButtons(hw.Buttons, cabOrderCh, hallButtonCh)
+
+	launchNetworkNode(cfg.ID, cabOrderCh,
+		hallButtonCh, elevatorStateCh, servedRequestsCh,
+		snapshotCh, peerUpdateCh, initCabRequestsCh)
+
+	launchManager(cfg.ID, snapshotCh, peerUpdateCh, cabRequestCh, hallRequestCh, LightsOut, doorInitCh)
+
+	launchElevatorFSM(hw, motorWatchdog, cabRequestCh, hallRequestCh, doorClosedCh, initCabRequestsCh, elevatorStateCh, lightsStateCh, servedRequestsCh, doorOpenReqCh)
+
+	launchDoor(hw, doorTimer, obstructionWatchdog, doorOpenReqCh, doorInitCh, doorClosedCh, doorLampCh)
+	launchLights(lightsStateCh, LightsOut, doorLampCh)
+
+	select {}
+}
+
+// ---- Utilities -----------------------------------------------------------
+
+// subnetBroadcastAddr derives the directed broadcast address for the interface
+// that owns localIP. Falls back to "255.255.255.255" when no match is found.
+func subnetBroadcastAddr(localIP string) string {
+	ifaces, _ := net.Interfaces()
+	for _, iface := range ifaces {
+		addrs, _ := iface.Addrs()
+		for _, addr := range addrs {
+			ipnet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			if ipnet.IP.String() != localIP {
+				continue
+			}
+			ip := ipnet.IP.To4()
+			if ip == nil {
+				continue
+			}
+			mask := ipnet.Mask
+			broadcast := make(net.IP, 4)
+			for i := range ip {
+				broadcast[i] = ip[i] | ^mask[i]
+			}
+			return broadcast.String()
+		}
 	}
-
+	return "255.255.255.255"
 }

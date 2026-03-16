@@ -6,13 +6,16 @@ import (
 	"time"
 )
 
-// Constants matching the C implementation
+const NumFloors = 4
+
+// HallUp and HallDown are the array indices for the two-element hall-request
+// and hall-button axis used throughout [NumFloors][2]bool and [2]RequestState.
+// They intentionally match int(elevio.BT_HallUp) and int(elevio.BT_HallDown).
 const (
-	//TODO: change this to something configurable with the init bash file
-	NumFloors = 4
+	HallUp   = 0
+	HallDown = 1
 )
 
-// ElevatorBehaviour represents the elevator's current FSM state
 type ElevatorBehaviour int
 
 const (
@@ -34,55 +37,89 @@ func (eb ElevatorBehaviour) String() string {
 	}
 }
 
-type Direction struct {
-	elevio.MotorDirection
-}
-
-func (direction Direction) String() string {
-	switch direction.MotorDirection {
-	case elevio.MD_Up:
-		return "up"
-	case elevio.MD_Down:
-		return "down"
-	case elevio.MD_Stop:
-		return "stop"
-	default:
-		return "unknown"
-	}
-}
-
-// Config holds elevator configuration parameters
 type Config struct {
-	//TODO: a lot more to do here given the init bash file
 	DoorOpenDuration time.Duration
 }
 
-// Elevator represents the state of a single elevator
 type Elevator struct {
 	Behaviour    ElevatorBehaviour
 	Floor        int
-	Direction    Direction
+	Direction    elevio.MotorDirection
 	CabRequests  [NumFloors]bool
-	HallRequests [NumFloors][2]bool // [floor][0=up/1=down]
-
-	Config Config
+	HallRequests [NumFloors][2]bool // [floor][0=up, 1=down]
+	Config       Config
 }
 
-// ElevatorUninitialized returns a new elevator in the uninitialized state.
-func ElevatorUninitialized() *Elevator {
+// ElevatorIn groups all channels that deliver events into RunElevator.
+// Inputs arrive from: hardware polling, the manager (HRA output), the door
+// module, the motor watchdog, and the network node (init signal).
+type ElevatorIn struct {
+	Floor           <-chan int
+	CabRequests     <-chan []bool
+	HallRequests    <-chan [][2]bool
+	DoorClosed      <-chan struct{}
+	MotorStall      <-chan struct{}
+	InitCabRequests <-chan []bool
+}
+
+// ElevatorOut groups all channels that RunElevator writes into.
+type ElevatorOut struct {
+	NetworkState    chan<- Elevator           // broadcast to RunNetworkNode
+	LightsState     chan<- Elevator           // broadcast to RunLights
+	ServedRequests  chan<- elevio.ButtonEvent // cleared hall requests → RunNetworkNode
+	DoorOpen        chan<- struct{}           // open-door signal → RunDoor
+	ResetMotorTimer chan<- struct{}           // keep motor watchdog alive
+	StopMotorTimer  chan<- struct{}           // disarm motor watchdog when motor stops
+}
+
+func ElevatorUninitialized(cabRequests [NumFloors]bool) *Elevator {
 	return &Elevator{
-		Floor:        -1,
-		Direction:    Direction{elevio.MD_Stop},
-		CabRequests:  [NumFloors]bool{},
-		HallRequests: [NumFloors][2]bool{},
-		Behaviour:    EB_Idle,
-		Config: Config{
-			DoorOpenDuration: 3 * time.Second,
-		},
+		Floor:       elevio.GetFloor(),
+		Direction:   elevio.MD_Stop,
+		Behaviour:   EB_Idle,
+		Config:      Config{DoorOpenDuration: 3 * time.Second},
+		CabRequests: cabRequests,
 	}
 }
 
-// ElevatorPrint prints the current elevator state (for debugging)
+// InitBetweenFloors moves the motor down until a floor is reached and returns
+// the initial elevator state together with the door-open duration for use by
+// the door timer.
+//func InitBetweenFloors() (Elevator, time.Duration) {
+//	elevator := ElevatorUninitialized()
+//	if elevio.GetFloor() == -1 {
+//		elevio.SetMotorDirection(elevio.MD_Down)
+//		elevator.Direction = elevio.MD_Down
+//		elevator.Behaviour = EB_Moving
+//	}
+//	return *elevator, elevator.Config.DoorOpenDuration
+//}
+
+// ---- Command pattern ----
+
+type ElevatorCommand interface {
+	execute(out ElevatorOut)
+}
+
+type CmdSetMotorDirectionCmd struct{ Dir elevio.MotorDirection }
+type CmdDoorRequestCmd struct{}
+
+func (c CmdSetMotorDirectionCmd) execute(out ElevatorOut) {
+	elevio.SetMotorDirection(c.Dir)
+	if c.Dir != elevio.MD_Stop {
+		out.ResetMotorTimer <- struct{}{}
+	} else {
+		select {
+		case out.StopMotorTimer <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (c CmdDoorRequestCmd) execute(out ElevatorOut) {
+	out.DoorOpen <- struct{}{}
+}
+
 func ElevatorPrint(elevator *Elevator) {
 	fmt.Printf("  +----+-----+---+----------+\n")
 	fmt.Printf("  |%-4s| ^ v | C |%-10s|\n", "Flr", "Behaviour")
@@ -93,11 +130,11 @@ func ElevatorPrint(elevator *Elevator) {
 			floorMarker = "*"
 		}
 		hUp := "-"
-		if elevator.HallRequests[f][0] {
+		if elevator.HallRequests[f][HallUp] {
 			hUp = "^"
 		}
 		hDn := "-"
-		if elevator.HallRequests[f][1] {
+		if elevator.HallRequests[f][HallDown] {
 			hDn = "v"
 		}
 		cab := "-"
@@ -111,24 +148,20 @@ func ElevatorPrint(elevator *Elevator) {
 		}
 	}
 	fmt.Printf("  +----+-----+---+----------+\n")
-	fmt.Printf("  Direction: %s\n", elevator.Direction.String())
+	fmt.Printf("  Direction: %s\n", DirnToString(elevator.Direction))
 }
 
-// DirectionToString converts a MotorDirection to a string
 func DirnToString(d elevio.MotorDirection) string {
 	switch d {
 	case elevio.MD_Up:
 		return "up"
 	case elevio.MD_Down:
 		return "down"
-	case elevio.MD_Stop:
-		return "stop"
 	default:
 		return "stop"
 	}
 }
 
-// ButtonToString converts a ButtonType to a string
 func ButtonToString(b elevio.ButtonType) string {
 	switch b {
 	case elevio.BT_HallUp:

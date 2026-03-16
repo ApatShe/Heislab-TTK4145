@@ -22,7 +22,7 @@ type HRAInput struct {
 	States       map[string]HRAElevState `json:"states"`
 }
 
-func OutputHallRequesstAssigner(input HRAInput) map[string][][2]bool {
+func OutputHallRequestAssigner(input HRAInput) map[string][][2]bool {
 	fmt.Println("HRA-received input:", input)
 
 	hraExecutable := ""
@@ -42,7 +42,7 @@ func OutputHallRequesstAssigner(input HRAInput) map[string][][2]bool {
 		return nil
 	}
 
-	ret, err := exec.Command("./hall_request_assigner/"+hraExecutable, "-i", string(jsonBytes)).CombinedOutput()
+	ret, err := exec.Command("./manager/hall_request_assigner/"+hraExecutable, "-i", string(jsonBytes)).CombinedOutput()
 	if err != nil {
 		fmt.Println("exec.Command error: ", err)
 		fmt.Println(string(ret))
