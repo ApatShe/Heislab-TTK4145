@@ -1,15 +1,15 @@
 package main
 
 import (
-	elevatorcontroller "Heislab/ElevatorController"
-	door "Heislab/Hardware"
-	"Heislab/Network/network/bcast"
-	"Heislab/Network/network/localip"
-	"Heislab/Network/network/peers"
-	networkdriver "Heislab/NetworkDriver"
-	"Heislab/driver-go/elevio"
+	"Heislab/coordinator"
+	door "Heislab/door"
+	elevatorcontroller "Heislab/elevatorcontroller"
+	elevatordriver "Heislab/elevatordriver"
 	"Heislab/lights"
-	"Heislab/manager"
+	networknode "Heislab/networknode"
+	"Heislab/node_communication/bcast"
+	"Heislab/node_communication/localip"
+	"Heislab/node_communication/peers"
 	"Heislab/timer"
 	"flag"
 	"fmt"
@@ -71,25 +71,25 @@ func configureNetwork(cfg NodeConfig) {
 
 // HardwareChannels carries raw event streams from the elevator I/O pollers.
 type HardwareChannels struct {
-	Buttons         chan elevio.ButtonEvent
+	Buttons         chan elevatordriver.ButtonEvent
 	Floor           chan int
 	Obstruction     chan bool
 	ObstructionInit bool
 }
 
 func initHardware(port int) {
-	elevio.Init("localhost:"+strconv.Itoa(port), elevatorcontroller.NumFloors)
+	elevatordriver.Init("localhost:"+strconv.Itoa(port), elevatorcontroller.NumFloors)
 }
 
 func startHardwarePolling() HardwareChannels {
 	hw := HardwareChannels{
-		Buttons:     make(chan elevio.ButtonEvent, 1),
+		Buttons:     make(chan elevatordriver.ButtonEvent, 1),
 		Floor:       make(chan int),
 		Obstruction: make(chan bool),
 	}
-	go elevio.PollButtons(hw.Buttons)
-	go elevio.PollFloorSensor(hw.Floor)
-	go elevio.PollObstructionSwitch(hw.Obstruction)
+	go elevatordriver.PollButtons(hw.Buttons)
+	go elevatordriver.PollFloorSensor(hw.Floor)
+	go elevatordriver.PollObstructionSwitch(hw.Obstruction)
 
 	// Sample once — default false if switch has not fired yet.
 	select {
@@ -133,6 +133,7 @@ func newObstructionWatchdog() ObstructionWatchdog {
 		Reset: make(chan struct{}),
 		Stop:  make(chan struct{}),
 	}
+
 	go timer.RunTimer(w.Reset, w.Stop, nil, obstructionTimeout, true, "Obstruction Watchdog")
 	return w
 }
@@ -151,9 +152,9 @@ func newMotorWatchdog() MotorWatchdog {
 
 // routeButtons splits the unified hardware button stream into cab (local) and
 // hall (network) streams. Receiving the event IS the message.
-func routeButtons(src <-chan elevio.ButtonEvent, cab, hall chan<- elevio.ButtonEvent) {
+func routeButtons(src <-chan elevatordriver.ButtonEvent, cab, hall chan<- elevatordriver.ButtonEvent) {
 	for btn := range src {
-		if btn.Button == elevio.BT_Cab {
+		if btn.Button == elevatordriver.BT_Cab {
 			cab <- btn
 		} else {
 			hall <- btn
@@ -165,25 +166,25 @@ func routeButtons(src <-chan elevio.ButtonEvent, cab, hall chan<- elevio.ButtonE
 
 func launchNetworkNode(
 	id string,
-	cabButtonIn chan elevio.ButtonEvent,
-	hallButtonIn chan elevio.ButtonEvent,
+	cabButtonIn chan elevatordriver.ButtonEvent,
+	hallButtonIn chan elevatordriver.ButtonEvent,
 	elevatorStateIn chan elevatorcontroller.Elevator,
-	servedRequestsIn chan elevio.ButtonEvent,
-	snapshotOut chan networkdriver.NetworkSnapshot,
+	servedRequestsIn chan elevatordriver.ButtonEvent,
+	snapshotOut chan networknode.NetworkSnapshot,
 	peerUpdateOut chan peers.PeerUpdate,
-	initCabRequestsOut chan []bool,
+	ElevatorInitState chan elevatorcontroller.ElevatorInitState,
 ) {
-	go networkdriver.RunNetworkNode(
-		networkdriver.NetworkNodeIn{
+	go networknode.RunNetworkNode(
+		networknode.NetworkNodeIn{
 			CabButton:      cabButtonIn,
 			HallButton:     hallButtonIn,
 			ElevatorState:  elevatorStateIn,
 			ServedRequests: servedRequestsIn,
 		},
-		networkdriver.NetworkNodeOut{
-			Snapshot:        snapshotOut,
-			PeerUpdate:      peerUpdateOut,
-			InitCabRequests: initCabRequestsOut,
+		networknode.NetworkNodeOut{
+			Snapshot:          snapshotOut,
+			PeerUpdate:        peerUpdateOut,
+			ElevatorInitState: ElevatorInitState,
 		},
 		id,
 	)
@@ -191,19 +192,19 @@ func launchNetworkNode(
 
 func launchManager(
 	id string,
-	snapshotIn chan networkdriver.NetworkSnapshot,
+	snapshotIn chan networknode.NetworkSnapshot,
 	peerUpdateIn chan peers.PeerUpdate,
 	cabRequestOut chan []bool,
 	hallRequestOut chan [][2]bool,
-	LightsOut chan manager.RequestLights,
+	LightsOut chan coordinator.RequestLights,
 	doorInitOut chan bool,
 ) {
-	go manager.RunManager(
-		manager.ManagerIn{
+	go coordinator.RunManager(
+		coordinator.ManagerIn{
 			Snapshot:   snapshotIn,
 			PeerUpdate: peerUpdateIn,
 		},
-		manager.ManagerOut{
+		coordinator.ManagerOut{
 			CabRequests:  cabRequestOut,
 			HallRequests: hallRequestOut,
 			Lights:       LightsOut,
@@ -219,20 +220,20 @@ func launchElevatorFSM(
 	cabRequestFromManager chan []bool,
 	hallRequestIn chan [][2]bool,
 	doorClosedIn chan struct{},
-	initCabRequestsIn chan []bool,
+	elevatorInitState chan elevatorcontroller.ElevatorInitState,
 	elevatorStateOut chan elevatorcontroller.Elevator,
 	lightsStateOut chan elevatorcontroller.Elevator,
-	servedRequestsOut chan elevio.ButtonEvent,
+	servedRequestsOut chan elevatordriver.ButtonEvent,
 	doorOpenReqOut chan struct{},
 ) {
 	go elevatorcontroller.RunElevator(
 		elevatorcontroller.ElevatorIn{
-			Floor:           hw.Floor,
-			CabRequests:     cabRequestFromManager,
-			HallRequests:    hallRequestIn,
-			DoorClosed:      doorClosedIn,
-			MotorStall:      motorWatchdog.Stall,
-			InitCabRequests: initCabRequestsIn,
+			Floor:             hw.Floor,
+			CabRequests:       cabRequestFromManager,
+			HallRequests:      hallRequestIn,
+			DoorClosed:        doorClosedIn,
+			MotorStall:        motorWatchdog.Stall,
+			ElevatorInitState: elevatorInitState,
 		},
 		elevatorcontroller.ElevatorOut{
 			NetworkState:    elevatorStateOut,
@@ -274,7 +275,7 @@ func launchDoor(
 
 func launchLights(
 	lightsStateIn chan elevatorcontroller.Elevator,
-	Lights chan manager.RequestLights,
+	Lights chan coordinator.RequestLights,
 	doorLampIn chan bool,
 ) {
 	go lights.RunLights(lights.LightsIn{
@@ -298,21 +299,21 @@ func main() {
 	motorWatchdog := newMotorWatchdog()
 
 	// -- Network node channels --
-	hallButtonCh := make(chan elevio.ButtonEvent, 1)
+	hallButtonCh := make(chan elevatordriver.ButtonEvent, 1)
 	elevatorStateCh := make(chan elevatorcontroller.Elevator, 1)
-	servedRequestsCh := make(chan elevio.ButtonEvent, 4)
-	snapshotCh := make(chan networkdriver.NetworkSnapshot, 1)
+	servedRequestsCh := make(chan elevatordriver.ButtonEvent, 4)
+	snapshotCh := make(chan networknode.NetworkSnapshot, 1)
 	peerUpdateCh := make(chan peers.PeerUpdate, 1)
-	initCabRequestsCh := make(chan []bool, 1)
+	elevatorInitStateCh := make(chan elevatorcontroller.ElevatorInitState, 1)
 
 	// -- Manager channels --
 	cabRequestCh := make(chan []bool, 1)
 	hallRequestCh := make(chan [][2]bool, 1)
-	LightsOut := make(chan manager.RequestLights, 1)
+	LightsOut := make(chan coordinator.RequestLights, 1)
 	doorInitCh := make(chan bool, 1)
 
 	// -- Elevator FSM ↔ Door --
-	cabOrderCh := make(chan elevio.ButtonEvent, 1)
+	cabOrderCh := make(chan elevatordriver.ButtonEvent, 1)
 	doorOpenReqCh := make(chan struct{})
 	doorClosedCh := make(chan struct{})
 
@@ -322,16 +323,50 @@ func main() {
 
 	go routeButtons(hw.Buttons, cabOrderCh, hallButtonCh)
 
-	launchNetworkNode(cfg.ID, cabOrderCh,
-		hallButtonCh, elevatorStateCh, servedRequestsCh,
-		snapshotCh, peerUpdateCh, initCabRequestsCh)
+	launchNetworkNode(
+		cfg.ID,
+		cabOrderCh,
+		hallButtonCh,
+		elevatorStateCh,
+		servedRequestsCh,
+		snapshotCh,
+		peerUpdateCh,
+		elevatorInitStateCh)
 
-	launchManager(cfg.ID, snapshotCh, peerUpdateCh, cabRequestCh, hallRequestCh, LightsOut, doorInitCh)
+	launchManager(
+		cfg.ID,
+		snapshotCh,
+		peerUpdateCh,
+		cabRequestCh,
+		hallRequestCh,
+		LightsOut,
+		doorInitCh)
 
-	launchElevatorFSM(hw, motorWatchdog, cabRequestCh, hallRequestCh, doorClosedCh, initCabRequestsCh, elevatorStateCh, lightsStateCh, servedRequestsCh, doorOpenReqCh)
+	launchElevatorFSM(
+		hw,
+		motorWatchdog,
+		cabRequestCh,
+		hallRequestCh,
+		doorClosedCh,
+		elevatorInitStateCh,
+		elevatorStateCh,
+		lightsStateCh,
+		servedRequestsCh,
+		doorOpenReqCh)
 
-	launchDoor(hw, doorTimer, obstructionWatchdog, doorOpenReqCh, doorInitCh, doorClosedCh, doorLampCh)
-	launchLights(lightsStateCh, LightsOut, doorLampCh)
+	launchDoor(
+		hw,
+		doorTimer,
+		obstructionWatchdog,
+		doorOpenReqCh,
+		doorInitCh,
+		doorClosedCh,
+		doorLampCh)
+
+	launchLights(
+		lightsStateCh,
+		LightsOut,
+		doorLampCh)
 
 	select {}
 }
