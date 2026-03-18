@@ -83,8 +83,7 @@ func RequestsClearAtCurrentFloor(elevator *Elevator) []elevatordriver.ButtonEven
 		if elevator.HallRequests[elevator.Floor][HallUp] {
 			elevator.HallRequests[elevator.Floor][HallUp] = false
 			served = append(served, elevatordriver.ButtonEvent{Floor: elevator.Floor, Button: elevatordriver.BT_HallUp})
-		}
-		if !RequestsAbove(elevator) && elevator.HallRequests[elevator.Floor][HallDown] {
+		} else if elevator.HallRequests[elevator.Floor][HallDown] {
 			elevator.HallRequests[elevator.Floor][HallDown] = false
 			served = append(served, elevatordriver.ButtonEvent{Floor: elevator.Floor, Button: elevatordriver.BT_HallDown})
 		}
@@ -92,8 +91,7 @@ func RequestsClearAtCurrentFloor(elevator *Elevator) []elevatordriver.ButtonEven
 		if elevator.HallRequests[elevator.Floor][HallDown] {
 			elevator.HallRequests[elevator.Floor][HallDown] = false
 			served = append(served, elevatordriver.ButtonEvent{Floor: elevator.Floor, Button: elevatordriver.BT_HallDown})
-		}
-		if !RequestsBelow(elevator) && elevator.HallRequests[elevator.Floor][HallUp] {
+		} else if elevator.HallRequests[elevator.Floor][HallUp] {
 			elevator.HallRequests[elevator.Floor][HallUp] = false
 			served = append(served, elevatordriver.ButtonEvent{Floor: elevator.Floor, Button: elevatordriver.BT_HallUp})
 		}
@@ -101,8 +99,7 @@ func RequestsClearAtCurrentFloor(elevator *Elevator) []elevatordriver.ButtonEven
 		if elevator.HallRequests[elevator.Floor][HallUp] {
 			elevator.HallRequests[elevator.Floor][HallUp] = false
 			served = append(served, elevatordriver.ButtonEvent{Floor: elevator.Floor, Button: elevatordriver.BT_HallUp})
-		}
-		if elevator.HallRequests[elevator.Floor][HallDown] {
+		} else if elevator.HallRequests[elevator.Floor][HallDown] {
 			elevator.HallRequests[elevator.Floor][HallDown] = false
 			served = append(served, elevatordriver.ButtonEvent{Floor: elevator.Floor, Button: elevatordriver.BT_HallDown})
 		}
@@ -121,10 +118,13 @@ func replaceHallRequests(elevator *Elevator, newRequests [][2]bool) {
 
 func RequestsChooseDirection(elevator *Elevator) DirnBehaviourPair {
 	log.Log("[FSM] ChooseDirection: floor=%d dir=%s above=%v below=%v here=%v", elevator.Floor, DirnToString(elevator.Direction), RequestsAbove(elevator), RequestsBelow(elevator), RequestsHere(elevator))
+
 	switch elevator.Direction {
 	case elevatordriver.MD_Up:
 		if RequestsAbove(elevator) {
 			return DirnBehaviourPair{elevatordriver.MD_Up, EB_Moving}
+		} else if elevator.HallRequests[elevator.Floor][HallDown] {
+			return DirnBehaviourPair{elevatordriver.MD_Down, EB_DoorOpen}
 		} else if RequestsBelow(elevator) {
 			return DirnBehaviourPair{elevatordriver.MD_Down, EB_Moving}
 		}
@@ -133,6 +133,8 @@ func RequestsChooseDirection(elevator *Elevator) DirnBehaviourPair {
 	case elevatordriver.MD_Down:
 		if RequestsBelow(elevator) {
 			return DirnBehaviourPair{elevatordriver.MD_Down, EB_Moving}
+		} else if elevator.HallRequests[elevator.Floor][HallUp] {
+			return DirnBehaviourPair{elevatordriver.MD_Up, EB_DoorOpen}
 		} else if RequestsAbove(elevator) {
 			return DirnBehaviourPair{elevatordriver.MD_Up, EB_Moving}
 		}

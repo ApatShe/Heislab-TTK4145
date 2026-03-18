@@ -1,6 +1,7 @@
 package networknode
 
 import (
+	log "Heislab/Log"
 	elevatorcontroller "Heislab/elevatorcontroller"
 	elevatordriver "Heislab/elevatordriver"
 	"Heislab/node_communication/peers"
@@ -16,11 +17,12 @@ const (
 )
 
 type ElevatorState struct {
-	Behaviour   string         `json:"behaviour"`
-	Floor       int            `json:"floor"`
-	Direction   string         `json:"direction"`
-	CabRequests []RequestState `json:"cabRequests"`
-	DoorOpen    bool           `json:"doorOpen"`
+	Behaviour      string         `json:"behaviour"`
+	Floor          int            `json:"floor"`
+	Direction      string         `json:"direction"`
+	CabRequests    []RequestState `json:"cabRequests"`
+	DoorOpen       bool           `json:"doorOpen"`
+	IsOutOfService bool           `json:"isOutOfService"`
 }
 
 type NetworkSnapshot struct {
@@ -53,13 +55,14 @@ type NetworkNodeOut struct {
 }
 
 func LocalElevatorToElevatorState(elevator elevatorcontroller.Elevator, cabRequests []RequestState) ElevatorState {
-
+	log.Log("[CONVERSION] Making snapshot with IsOutOfService=%t", elevator.IsOutOfService)
 	return ElevatorState{
-		Behaviour:   elevator.Behaviour.String(),
-		Floor:       elevator.Floor,
-		Direction:   elevatorcontroller.DirnToString(elevator.Direction),
-		CabRequests: cabRequests,
-		DoorOpen:    elevator.Behaviour == elevatorcontroller.EB_DoorOpen,
+		Behaviour:      elevator.Behaviour.String(),
+		Floor:          elevator.Floor,
+		Direction:      elevatorcontroller.DirnToString(elevator.Direction),
+		CabRequests:    cabRequests,
+		DoorOpen:       elevator.Behaviour == elevatorcontroller.EB_DoorOpen,
+		IsOutOfService: elevator.IsOutOfService,
 	}
 }
 

@@ -18,7 +18,7 @@ type ManagerOut struct {
 	CabRequests  chan<- []bool        // consensused cab requests → elevator FSM
 	HallRequests chan<- [][2]bool     // HRA-assigned matrix → elevator
 	Lights       chan<- RequestLights // HRA-assigned request matrix and active cabRequest → lights
-	DoorInit     chan<- bool          // persistent door state → door module on first snapshot
+	//DoorInit     chan<- bool          // persistent door state → door module on first snapshot
 }
 
 type RequestLights struct {
@@ -84,8 +84,12 @@ func extractActiveElevatorStates(snapshot networknode.NetworkSnapshot, activeEle
 		if !activeElevators[nodeID] {
 			continue
 		}
+		// Ignore elevators uninitialized
 		if elevatorState.Floor == -1 {
-			continue // not yet initialized, skip to avoid crashing HRA
+			continue
+		}
+		if elevatorState.IsOutOfService {
+			continue
 		}
 
 		cabRequests := make([]bool, len(elevatorState.CabRequests))
@@ -110,7 +114,7 @@ func extractDesignatedHallRequests(delegatedHallRequests map[string][][2]bool, i
 
 func RunManager(in ManagerIn, out ManagerOut, id string) {
 	activeElevators := map[string]bool{id: true} // always treat self as active
-	doorInitSent := false
+	//doorInitSent := false
 
 	//var lastHallRequests [][2]bool
 	//var lastHallLights [][2]bool
@@ -119,7 +123,9 @@ func RunManager(in ManagerIn, out ManagerOut, id string) {
 		select {
 		case peerUpdate := <-in.PeerUpdate:
 			for _, lostID := range peerUpdate.Lost {
-				delete(activeElevators, lostID)
+				if lostID != id { // never evict self
+					delete(activeElevators, lostID)
+				}
 			}
 			for _, peerID := range peerUpdate.Peers {
 				activeElevators[peerID] = true
@@ -127,16 +133,16 @@ func RunManager(in ManagerIn, out ManagerOut, id string) {
 
 		case snapshot := <-in.Snapshot:
 
-			log.Log("[Manager] Received snapshot iter=%d from node %s with %d elevators and hall requests: %v", snapshot.Iter, snapshot.NodeID, len(snapshot.Elevators), snapshot.HallRequests)
+			log.Log("[Manager] Received snapshot iter=%d from node %s with %d elevators, cab requests: %v, hall requests: %v", snapshot.Iter, snapshot.NodeID, len(snapshot.Elevators), snapshot.Elevators[id].CabRequests, snapshot.HallRequests)
 			// Always add any node present in the snapshot as active
-			if !doorInitSent {
-				doorInitSent = true
-				ownState := snapshot.Elevators[id]
-				select {
-				case out.DoorInit <- ownState.DoorOpen:
-				default:
-				}
-			}
+			//if !doorInitSent {
+			//	doorInitSent = true
+			//	ownState := snapshot.Elevators[id]
+			//	select {
+			//	case out.DoorInit <- ownState.DoorOpen:
+			//	default:
+			//	}
+			//}
 
 			consensusCabRequests := snapshot.Elevators[id].CabRequests
 			consensusCabRequestsBool := make([]bool, len(consensusCabRequests))

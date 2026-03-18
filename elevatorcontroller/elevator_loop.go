@@ -3,6 +3,7 @@ package elevatorcontroller
 import (
 	log "Heislab/Log"
 	elevatordriver "Heislab/elevatordriver"
+	"time"
 )
 
 // RunElevator runs the elevator finite state machine.
@@ -39,8 +40,18 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 		log.Log("[elevator] between floors on startup — moving down to find floor")
 	} else if initState.DoorOpen {
 		elevator.Behaviour = EB_DoorOpen
-		out.DoorOpen <- struct{}{}
+
+		select {
+		case out.DoorOpen <- struct{}{}:
+		default:
+		}
 		log.Log("[elevator] restoring door-open state from peer snapshot")
+	} else {
+		select {
+		case out.ConfirmDoorClosed <- struct{}{}:
+		default:
+		}
+		log.Log("[elevator] no door state to recover — confirming door closed")
 	}
 
 	broadcastState := func() {
@@ -69,16 +80,20 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 	}
 
 	// log.Log("Elevator controller started!")
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
 
+	lastFloor := elevator.Floor
 	for {
 		var served []elevatordriver.ButtonEvent
 		var commands []ElevatorCommand
 
 		select {
+
 		case newCabRequest := <-in.CabRequests:
-			log.Log("Manager provided FSM CabRequest %v \n", newCabRequest)
+			log.Log("[elevator] cab request update: %v", newCabRequest)
 			served, commands = FsmOnCabRequests(elevator, newCabRequest)
-			log.Log("FSM served cab buttons: %v, new state: %v\n", served, elevator)
+			log.Log("[elevator] served: %v", served)
 
 		case newHallRequests := <-in.HallRequests:
 			// log.Log("Hall request update from manager\n")
@@ -87,16 +102,34 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 		case floor := <-in.Floor:
 			served, commands = FsmOnFloorArrival(elevator, floor)
 
+		case floor := <-in.Floor:
+			served, commands = FsmOnFloorArrival(elevator, floor)
+
+			// If floor advanced, that's evidence of motion → reset watchdog and clear OOS.
+			if elevator.Floor != lastFloor {
+				lastFloor = elevator.Floor
+				select {
+				case out.ResetMotorTimer <- struct{}{}:
+				default:
+				}
+				if elevator.IsOutOfService {
+					log.Log("[elevator] recovered: floor changed → clearing IsOutOfService")
+					elevator.IsOutOfService = false
+				}
+			}
+
 		case <-in.DoorClosed:
 			served, commands = FsmOnDoorClose(elevator)
 
 		case <-in.MotorStall:
-			// Motor stall detected — stop motor and return to idle.
-			// The HRA will re-assign requests once the elevator broadcasts
-			// its new idle state.
-			// log.Log("Motor watchdog: stall detected, stopping motor")
+			if elevator.Behaviour == EB_Moving && elevator.Direction != elevatordriver.MD_Stop {
+				log.Log("[elevator] motor stall detected! Degrading gracefully.")
+				log.Log("[elevator] OUT of service status WAS: %t", elevator.IsOutOfService)
+			}
+
 			elevator.Direction = elevatordriver.MD_Stop
 			elevator.Behaviour = EB_Idle
+			elevator.IsOutOfService = true
 			elevatordriver.SetMotorDirection(elevatordriver.MD_Stop)
 			select {
 			case out.StopMotorTimer <- struct{}{}:

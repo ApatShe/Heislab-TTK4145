@@ -15,7 +15,7 @@ func FsmActOnBehaviourPair(elevator *Elevator, pair DirnBehaviourPair) ([]elevat
 	switch pair.Behaviour {
 	case EB_DoorOpen:
 		return RequestsClearAtCurrentFloor(elevator), []ElevatorCommand{
-			CmdSetMotorDirectionCmd{Dir: elevatordriver.MD_Stop}, // ← add this
+			CmdSetMotorDirectionCmd{Dir: elevatordriver.MD_Stop},
 			CmdDoorRequestCmd{},
 		}
 
@@ -45,8 +45,9 @@ func FsmOnCabRequests(elevator *Elevator, cabRequests []bool) ([]elevatordriver.
 	case EB_Idle:
 		served, commands = FsmActOnBehaviourPair(elevator, RequestsChooseDirection(elevator))
 	case EB_DoorOpen:
-		served = RequestsClearAtCurrentFloor(elevator)
-		if len(served) > 0 {
+		if elevator.CabRequests[elevator.Floor] {
+			elevator.CabRequests[elevator.Floor] = false
+			served = append(served, elevatordriver.ButtonEvent{Floor: elevator.Floor, Button: elevatordriver.BT_Cab})
 			commands = append(commands, CmdDoorRequestCmd{})
 		}
 	}
@@ -65,12 +66,8 @@ func replaceCabRequests(elevator *Elevator, cabRequests []bool) {
 // If the elevator is idle it acts immediately on any newly assigned requests.
 func FsmOnHallRequestsUpdate(elevator *Elevator, newRequests [][2]bool) ([]elevatordriver.ButtonEvent, []ElevatorCommand) {
 	log.Log("[FSM] HallRequestsUpdate: floor=%d dir=%s beh=%s requests=%v", elevator.Floor, DirnToString(elevator.Direction), elevator.Behaviour.String(), newRequests)
-	// ElevatorPrint(elevator)
 
 	replaceHallRequests(elevator, newRequests)
-
-	// log.Log("[FSM] Elevator state after hall request update: floor=%d beh=%v requests=%v\n",
-	//     elevator.Floor, elevator.Behaviour, elevator.HallRequests)
 
 	var served []elevatordriver.ButtonEvent
 	var commands []ElevatorCommand
@@ -78,15 +75,25 @@ func FsmOnHallRequestsUpdate(elevator *Elevator, newRequests [][2]bool) ([]eleva
 	switch elevator.Behaviour {
 	case EB_Idle:
 		served, commands = FsmActOnBehaviourPair(elevator, RequestsChooseDirection(elevator))
-
 	case EB_DoorOpen:
-		// General fix: any request assigned at our current floor while doors
-		// are open should be served immediately and the door timer restarted.
-		// RequestsClearAtCurrentFloor already knows direction, floor, and all
-		// request types — this covers every case, not just the HallDown race.
-		served = RequestsClearAtCurrentFloor(elevator)
-		if len(served) > 0 {
-			commands = append(commands, CmdDoorRequestCmd{})
+		hasInDirectionMatch := false
+		switch elevator.Direction {
+		case elevatordriver.MD_Up:
+			hasInDirectionMatch = elevator.HallRequests[elevator.Floor][HallUp] ||
+				elevator.CabRequests[elevator.Floor]
+		case elevatordriver.MD_Down:
+			hasInDirectionMatch = elevator.HallRequests[elevator.Floor][HallDown] ||
+				elevator.CabRequests[elevator.Floor]
+		default:
+			hasInDirectionMatch = elevator.HallRequests[elevator.Floor][HallUp] ||
+				elevator.HallRequests[elevator.Floor][HallDown] ||
+				elevator.CabRequests[elevator.Floor]
+		}
+		if hasInDirectionMatch {
+			served = RequestsClearAtCurrentFloor(elevator)
+			if len(served) > 0 {
+				commands = append(commands, CmdDoorRequestCmd{})
+			}
 		}
 	}
 

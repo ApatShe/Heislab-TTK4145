@@ -36,7 +36,7 @@ func RunNetworkNode(
 	go bcast.BcastTransmitter(snapshotPort, snapshotTx)
 	go bcast.BcastReceiver(snapshotPort, snapshotRx)
 
-	// log.Log("Network %s: peerPort=%d snapPort=%d", id, peerPort, snapshotPort)
+	log.Log("Network %s: peerPort=%d snapshotPort=%d", id, peerPort, snapshotPort)
 
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -45,9 +45,7 @@ func RunNetworkNode(
 	defer startupTimer.Stop()
 
 	readyToBroadcast := false
-	//isSolo := false
-	//receivedSnapshotFromPeer := false
-	//peerConfirmed := false
+	wasSolo := false
 	livePeerIDs := []string{id}
 
 	sendSnapshot := func() {
@@ -57,7 +55,7 @@ func RunNetworkNode(
 		if currentSnapshot.Elevators[id].Floor == -1 {
 			return
 		}
-		log.Log("[SNAPSHOT->MGR] sending snapshot to manager: hallRequests=%v floor=%d", currentSnapshot.HallRequests[id], currentSnapshot.Elevators[id].Floor)
+		log.Log("[SNAPSHOT->MGR] sending snapshot to manager: hallRequests=%v floor=%d, Service Status: %t", currentSnapshot.HallRequests[id], currentSnapshot.Elevators[id].Floor, currentSnapshot.Elevators[id].IsOutOfService)
 		select {
 		case out.Snapshot <- currentSnapshot:
 		default:
@@ -69,7 +67,7 @@ func RunNetworkNode(
 			readyToBroadcast = true
 			peerTxEnable <- true
 
-			// Settle any unrecovered cab requests to INACTIVE now that startup is complete
+			// Settle cabs only — FSM needs a definite bool on startup
 			elev := currentSnapshot.Elevators[id]
 			settled := make([]RequestState, len(elev.CabRequests))
 			copy(settled, elev.CabRequests)
@@ -82,21 +80,8 @@ func RunNetworkNode(
 			currentSnapshot.Elevators[id] = elev
 			log.Log("[INIT] settled remaining UNKNOWN cab requests to INACTIVE")
 
-			// Settle any unrecovered hall requests to INACTIVE now that startup is complete
-			// FilteredMessage has already run if peers were present, so only genuinely
-			// unknown floors (no peer knowledge) remain as UNKNOWN here
-			ownHallRequests := currentSnapshot.HallRequests[id]
-			if ownHallRequests != nil {
-				for floor := range ownHallRequests {
-					for btn := range ownHallRequests[floor] {
-						if ownHallRequests[floor][btn] == UNKNOWN {
-							ownHallRequests[floor][btn] = INACTIVE
-						}
-					}
-				}
-				currentSnapshot.HallRequests[id] = ownHallRequests
-				log.Log("[INIT] settled remaining UNKNOWN hall requests to INACTIVE")
-			}
+			// Halls deliberately NOT settled here — let merger resolve them
+			// from peer snapshots naturally over the next few ticks
 
 			var cabRequests []bool
 			if recoveredElev, ok := currentSnapshot.Elevators[id]; ok {
@@ -127,7 +112,16 @@ func RunNetworkNode(
 			iter++
 			currentSnapshot.Iter = iter
 			knownStates[id] = currentSnapshot
-			// log.Log("[TX] iter=%d hallRequests=%v elevators=%v", iter, currentSnapshot.HallRequests[id], currentSnapshot.Elevators[id])
+			log.Log("[TX] iter=%d hallRequests=%v elevators=%v", iter, currentSnapshot.HallRequests[id], currentSnapshot.Elevators[id])
+
+			for knownStates, id := range currentSnapshot.Elevators {
+				log.Log("[STATUS] perspective %v sees elevator %v with Service Status: %t", id, knownStates, currentSnapshot.Elevators[string(knownStates)].IsOutOfService)
+			}
+
+			// Solo mode: advance cabs without peer consensus.
+			// Hall advancement is intentionally omitted — halls stay REQUESTED
+			// during solo to avoid propagateResetsToOwn ambiguity on reconnect.
+			currentSnapshot = AdvanceCabToActive(currentSnapshot, livePeerIDs, knownStates)
 
 			select {
 			case snapshotTx <- currentSnapshot:
@@ -136,7 +130,7 @@ func RunNetworkNode(
 			sendSnapshot()
 
 		case elevatorState := <-in.ElevatorState:
-
+			log.Log("[ELEV STATE] networknode received Out Of Service status of elevator: %t", elevatorState.IsOutOfService)
 			if elevatorState.Floor == -1 {
 				log.Log("[GUARD] dropping elevator state with floor=-1, not updating snapshot")
 				break
@@ -148,30 +142,46 @@ func RunNetworkNode(
 		case cabButton := <-in.CabButton:
 			log.Log("[CAB BTN] received button event %v", cabButton)
 			currentSnapshot = markCabButtonAsRequested(currentSnapshot, id, cabButton)
-			// sendSnapshot()
 
 		case hallButton := <-in.HallButton:
-
 			log.Log("[HALL BTN] received button event %v", hallButton)
-
 			currentSnapshot = markHallButtonAsRequested(currentSnapshot, id, hallButton)
-			//currentSnapshot = AdvanceHallToActive(currentSnapshot, livePeerIDs, knownStates)
-
-			//if readyToBroadcast {
-			//	iter++
-			//	currentSnapshot.Iter = iter
-			//	knownStates[id] = currentSnapshot
-			//	forceSend(snapshotTx, currentSnapshot)
-			//}
-
-			//sendSnapshot()
 
 		case servedRequests := <-in.ServedRequests:
 			log.Log("[SERVED REQ] network received served requests: %v", servedRequests)
 			currentSnapshot = markRequestServed(currentSnapshot, id, servedRequests)
 
 		case peerUpdate := <-peerUpdateCh:
-			if len(peerUpdate.Peers) > 0 {
+			selfLost := false
+			for _, lostID := range peerUpdate.Lost {
+				if lostID == id {
+					selfLost = true
+					break
+				}
+			}
+
+			if selfLost {
+				log.Log("[PEER] self lost from network, entering solo mode")
+				livePeerIDs = []string{id}
+				wasSolo = true
+			} else if wasSolo && len(peerUpdate.Peers) > 1 {
+				log.Log("[PEER] reconnecting after solo, resetting own halls to UNKNOWN for peer merge")
+				wasSolo = false
+				ownHalls := make([][2]RequestState, elevatorcontroller.NumFloors)
+				for i := range ownHalls {
+					ownHalls[i] = [2]RequestState{UNKNOWN, UNKNOWN}
+				}
+				currentSnapshot.HallRequests[id] = ownHalls
+				seen := map[string]bool{id: true}
+				newLive := []string{id}
+				for _, peer := range peerUpdate.Peers {
+					if !seen[peer] {
+						seen[peer] = true
+						newLive = append(newLive, peer)
+					}
+				}
+				livePeerIDs = newLive
+			} else if len(peerUpdate.Peers) > 0 {
 				seen := map[string]bool{id: true}
 				newLive := []string{id}
 				for _, peer := range peerUpdate.Peers {
@@ -191,10 +201,13 @@ func RunNetworkNode(
 			case out.PeerUpdate <- peerUpdate:
 			default:
 			}
+
 		case receivedSnapshot := <-snapshotRx:
-
 			log.Log("[SNAPSHOT RX] received snapshot iter=%d from node %s with %d elevators and hall requests: %v", receivedSnapshot.Iter, receivedSnapshot.NodeID, len(receivedSnapshot.Elevators), receivedSnapshot.HallRequests)
-
+			log.Log("[SNAPSHOT RX] service status of received elevators: ")
+			for nodeID, elevState := range receivedSnapshot.Elevators {
+				log.Log("[SNAPSHOT RX]   nodeID=%s isOutOfService=%t", nodeID, elevState.IsOutOfService)
+			}
 			knownStates[receivedSnapshot.NodeID] = receivedSnapshot
 			currentSnapshot = FilteredMessage(currentSnapshot, receivedSnapshot)
 			currentSnapshot = propagateResetsToOwn(currentSnapshot, receivedSnapshot)
@@ -202,31 +215,24 @@ func RunNetworkNode(
 			currentSnapshot = AdvanceHallToActive(currentSnapshot, livePeerIDs, knownStates)
 			currentSnapshot = AdvanceCabToActive(currentSnapshot, livePeerIDs, knownStates)
 
+			// Settle own UNKNOWN halls — any that survived the merge are genuinely
+			// unknown to all peers, so INACTIVE is correct
+			ownHalls := currentSnapshot.HallRequests[id]
+			for floor := range ownHalls {
+				for btn := range ownHalls[floor] {
+					if ownHalls[floor][btn] == UNKNOWN {
+						ownHalls[floor][btn] = INACTIVE
+					}
+				}
+			}
+			currentSnapshot.HallRequests[id] = ownHalls
+
 			if !readyToBroadcast && receivedSnapshot.NodeID != id {
 				enableBroadcast()
 			}
-
-			//enableBroadcast()
-			//sendSnapshot()
-
 		}
 	}
 }
-
-//func forceSend(ch chan NetworkSnapshot, snapshot NetworkSnapshot) {
-//	select {
-//	case ch <- snapshot:
-//	default:
-//		select {
-//		case <-ch:
-//		default:
-//		}
-//		select {
-//		case ch <- snapshot:
-//		default:
-//		}
-//	}
-//}
 
 func hallButtonIndex(button elevatordriver.ButtonType) int {
 	return int(button)
@@ -242,42 +248,28 @@ func markCabButtonAsRequested(snapshot NetworkSnapshot, nodeID string, button el
 	if elevState.CabRequests[button.Floor] < REQUESTED {
 		newCabReqs := make([]RequestState, len(elevState.CabRequests))
 		copy(newCabReqs, elevState.CabRequests)
-
 		newCabReqs[button.Floor] = REQUESTED
 		elevState.CabRequests = newCabReqs
 		snapshot.Elevators[nodeID] = elevState
-
 		log.Log("[CAB BTN] marked as REQUESTED for nodeID=%s floor=%d btn=%d", nodeID, button.Floor, button.Button)
 	} else {
 		log.Log("[CAB BTN] floor=%d btn=%d already at state=%d, skipping", button.Floor, button.Button, elevState.CabRequests[button.Floor])
 	}
-
 	return snapshot
 }
 
 func markHallButtonAsRequested(snapshot NetworkSnapshot, nodeID string, button elevatordriver.ButtonEvent) NetworkSnapshot {
-
 	if _, ok := snapshot.HallRequests[nodeID]; !ok {
 		log.Log("[HALL BTN] ERROR: nodeID=%s not in HallRequests keys=%v", nodeID, snapshot.HallRequests)
 		return snapshot
 	}
-	// log.Log("markHallButtonAsRequested: nodeID=%s floor=%d btn=%d", nodeID, button.Floor, button.Button)
-
 	buttonIndex := hallButtonIndex(button.Button)
-
-	if _, ok := snapshot.HallRequests[nodeID]; !ok {
-		// log.Log("markHallButtonAsRequested: nodeID=%s not found in HallRequests, returning early", nodeID)
-		return snapshot
-	}
-
 	ownRequests := snapshot.HallRequests[nodeID]
 	if ownRequests[button.Floor][buttonIndex] < REQUESTED {
 		newReqs := make([][2]RequestState, len(ownRequests))
 		copy(newReqs, ownRequests)
-
 		newReqs[button.Floor][buttonIndex] = REQUESTED
 		snapshot.HallRequests[nodeID] = newReqs
-
 		log.Log("[HALL BTN] marked as REQUESTED for nodeID=%s floor=%d btn=%d", nodeID, button.Floor, button.Button)
 	} else {
 		log.Log("[HALL BTN] floor=%d btn=%d already at state=%d, skipping", button.Floor, button.Button, ownRequests[button.Floor][buttonIndex])
@@ -285,7 +277,6 @@ func markHallButtonAsRequested(snapshot NetworkSnapshot, nodeID string, button e
 	return snapshot
 }
 
-// removeFromSlice returns a new slice with all occurrences of item removed.
 func removeFromSlice(slice []string, item string) []string {
 	out := make([]string, 0, len(slice))
 	for _, v := range slice {
@@ -295,15 +286,6 @@ func removeFromSlice(slice []string, item string) []string {
 	}
 	return out
 }
-
-//func isAloneOnNetwork(peerUpdate peers.PeerUpdate, id string) bool {
-//	for _, peer := range peerUpdate.Peers {
-//		if peer != id {
-//			return false
-//		}
-//	}
-//	return true
-//}
 
 func snapshotChanged(before, after NetworkSnapshot, id string) bool {
 	beforeReqs := before.HallRequests[id]
@@ -360,8 +342,6 @@ func resetHallRequest(snapshot NetworkSnapshot, id string, floor, buttonIndex in
 	newRequests[floor][buttonIndex] = INACTIVE
 	snapshot.HallRequests[id] = newRequests
 
-	// Clear peer copies immediately so HRA doesn't re-assign before
-	// broadcast propagation completes
 	for peerID, peerRequests := range snapshot.HallRequests {
 		if peerID == id || peerRequests == nil {
 			continue
@@ -379,7 +359,6 @@ func resetHallRequest(snapshot NetworkSnapshot, id string, floor, buttonIndex in
 
 func resetCabRequest(snapshot NetworkSnapshot, id string, floor int) NetworkSnapshot {
 	log.Log("[CAB RESET] mark as INACTIVE nodeID=%s floor=%d", id, floor)
-
 	elev, ok := snapshot.Elevators[id]
 	if !ok || elev.CabRequests[floor] != ACTIVE {
 		return snapshot
@@ -393,9 +372,7 @@ func resetCabRequest(snapshot NetworkSnapshot, id string, floor int) NetworkSnap
 }
 
 func markRequestServed(snapshot NetworkSnapshot, id string, served elevatordriver.ButtonEvent) NetworkSnapshot {
-
 	log.Log("[REQUEST SERVED] nodeID=%s floor=%d btn=%d", id, served.Floor, served.Button)
-
 	if served.Button == elevatordriver.BT_Cab {
 		return resetCabRequest(snapshot, id, served.Floor)
 	}

@@ -68,6 +68,8 @@ func mergeCabRequests(local, received []RequestState, localID, receivedID, ownID
 	for floor := range local {
 		if localID == ownID && isUnResettingState(local[floor], received[floor]) {
 			merged[floor] = local[floor]
+		} else if localID == ownID && shouldResetState(local[floor], received[floor]) && receivedID != ownID {
+			merged[floor] = local[floor]
 		} else {
 			merged[floor] = returnValidState(local[floor], received[floor])
 		}
@@ -156,11 +158,12 @@ func mergeElevators(local, received NetworkSnapshot) map[string]ElevatorState {
 		// Peers may only contribute cab request recovery, nothing else.
 		if nodeID == received.NodeID {
 			merged[nodeID] = ElevatorState{
-				Behaviour:   receivedState.Behaviour,
-				Floor:       receivedState.Floor,
-				Direction:   receivedState.Direction,
-				DoorOpen:    receivedState.DoorOpen,
-				CabRequests: mergedCabs,
+				Behaviour:      receivedState.Behaviour,
+				Floor:          receivedState.Floor,
+				Direction:      receivedState.Direction,
+				DoorOpen:       receivedState.DoorOpen,
+				CabRequests:    mergedCabs,
+				IsOutOfService: receivedState.IsOutOfService,
 			}
 		} else if exists {
 			// Accept the peer's DoorOpen during startup recovery only.
@@ -173,11 +176,12 @@ func mergeElevators(local, received NetworkSnapshot) map[string]ElevatorState {
 					recoveredDoorOpen, received.NodeID)
 			}
 			merged[nodeID] = ElevatorState{
-				Behaviour:   localState.Behaviour,
-				Floor:       localState.Floor,
-				Direction:   localState.Direction,
-				DoorOpen:    recoveredDoorOpen,
-				CabRequests: mergedCabs,
+				Behaviour:      localState.Behaviour,
+				Floor:          localState.Floor,
+				Direction:      localState.Direction,
+				DoorOpen:       recoveredDoorOpen,
+				CabRequests:    mergedCabs,
+				IsOutOfService: localState.IsOutOfService,
 			}
 		}
 	}
@@ -338,7 +342,7 @@ func allLivePeersKnowRequestedHall(
 	}
 
 	for _, peerID := range consensusPeers {
-		peerEntry, ok := knownStates[peerID].HallRequests[peerID]
+		peerEntry, ok := knownStates[peerID].HallRequests[snapshot.NodeID]
 		if !ok {
 			log.Log("allLivePeersKnowRequestedHall: peer=%s has no own entry", peerID)
 			return false

@@ -6,10 +6,10 @@ import (
 
 // DoorIn groups all channels that deliver events into RunDoor.
 type DoorIn struct {
-	Obstruction          <-chan bool     // hardware obstruction sensor state
-	TimerExpired         <-chan struct{} // door-open timer has fired
-	OpenRequest          <-chan struct{} // elevator FSM requests the door to open
-	NetworkDoorOpenState <-chan bool     // door-open state restored from network snapshot on startup
+	Obstruction       <-chan bool     // hardware obstruction sensor state
+	TimerExpired      <-chan struct{} // door-open timer has fired
+	OpenRequest       <-chan struct{} // elevator FSM requests the door to open
+	ConfirmDoorClosed <-chan struct{} // signal from elevator FSM that door is closed on startup
 }
 
 // DoorOut groups all channels that RunDoor writes into.
@@ -21,13 +21,13 @@ type DoorOut struct {
 	StopObstructionWatchdog  chan<- struct{} // disarms obstruction watchdog when clear
 }
 
-func RunDoor(in DoorIn, out DoorOut, obstructionInit bool) {
+func RunDoor(in DoorIn, out DoorOut) {
 	openRequested := false
 	doorIsOpen := false
-	isObstructed := obstructionInit
+	isObstructed := false
 	timerIsRunning := false
 
-	log.Log("[door] starting: obstructionInit=%v", obstructionInit)
+	log.Log("[door] starting: waiting for door state confirmation from elevator")
 
 	// The four predicates below encapsulate every branch of the door state
 	// machine. They are named as questions so the switch reads as plain English.
@@ -88,15 +88,11 @@ func RunDoor(in DoorIn, out DoorOut, obstructionInit bool) {
 
 	for {
 		select {
-		case wasOpen := <-in.NetworkDoorOpenState:
-			// One-shot: restore door-open state from the peer snapshot on startup.
-			// Nil the channel so this case is never selected again.
-			in.NetworkDoorOpenState = nil
-			log.Log("[door] network restore: wasOpen=%v", wasOpen)
-			if wasOpen {
-				openRequested = true
-				updateDoor()
-			}
+
+		case <-in.ConfirmDoorClosed:
+			doorIsOpen = false
+			out.Lamp <- false
+			log.Log("[door] door closed confirmed at startup, lamp off")
 
 		case <-in.OpenRequest:
 			log.Log("[door] open request received")
