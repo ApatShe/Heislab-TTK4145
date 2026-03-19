@@ -12,7 +12,7 @@ import (
 //   - Cab lights and floor indicator — driven by the local elevator FSM state.
 //     These reflect what this elevator has committed to serve.
 //
-//   - Hall lights: driven by the consensus hall-request matrix from the manager.
+//   - Hall lights: driven by the consensus hall-request matrix from the coordinator.
 //     A hall light is only switched on when all peers have acknowledged the request
 //     (ACTIVE), and only switched off when consensus says it has been cleared.
 //     RunLights does not decide when that happens, it only executes the command.
