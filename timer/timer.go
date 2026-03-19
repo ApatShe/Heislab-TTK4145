@@ -1,7 +1,7 @@
 package timer
 
 import (
-	"fmt"
+	log "Heislab/Log"
 	"time"
 )
 
@@ -22,6 +22,7 @@ func RunTimer(
 	panicOnTimeout bool,
 	name string,
 ) {
+	log.Log("[timer] %s started (timeout=%s panicOnTimeout=%v)", name, timeout, panicOnTimeout)
 	t := time.NewTimer(timeout)
 	t.Stop()
 	drainTimer(t) // ensure channel is empty after Stop
@@ -32,16 +33,20 @@ func RunTimer(
 			if !t.Stop() {
 				drainTimer(t)
 			}
+			log.Log("[timer] %s stopped", name)
 
 		case <-resetChan:
 			if !t.Stop() {
 				drainTimer(t)
 			}
 			t.Reset(timeout)
+			log.Log("[timer] %s armed (%s)", name, timeout)
 
 		case <-t.C:
+			log.Log("[timer] %s fired", name)
 			if panicOnTimeout {
-				panic(fmt.Sprintf("Timer %q timed out", name))
+				log.Log("[timer] %s exceeded limit — panicking", name)
+				panic("[timer] '" + name + "' timed out")
 			}
 			if timeoutChan != nil {
 				select {
@@ -53,7 +58,7 @@ func RunTimer(
 	}
 }
 
-// drainTimer safely empties the timer channel after a Stop() that may have
+// drainTimer  empties the timer channel after a Stop() that may have
 // already fired. Must only be called when the timer goroutine is not running.
 func drainTimer(t *time.Timer) {
 	select {
