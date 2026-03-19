@@ -68,7 +68,7 @@ func CabRequestShouldClearImmediately(elevator *Elevator, btnFloor int) bool {
 }
 
 // RequestsClearAtCurrentFloor clears served requests and returns cleared hall
-// requests so RunElevator can notify the Manager via servedChan.
+// requests so RunElevator can notify the Coordinator via servedChan.
 // No lamp calls — RunLights owns all lamps via elevator state broadcast.
 func RequestsClearAtCurrentFloor(elevator *Elevator) []elevatordriver.ButtonEvent {
 	served := []elevatordriver.ButtonEvent{}
@@ -107,9 +107,9 @@ func RequestsClearAtCurrentFloor(elevator *Elevator) []elevatordriver.ButtonEven
 	return served
 }
 
-// replaceHallRequests writes the Manager-assigned hall matrix into the elevator.
+// replaceHallRequests writes the Coordinator-assigned hall matrix into the elevator.
 func replaceHallRequests(elevator *Elevator, newRequests [][2]bool) {
-	// log.Log("[FSM] Replacing hall request matrix %v with manager assignment: %v", elevator.HallRequests, newRequests)
+	// log.Log("[FSM] Replacing hall request matrix %v with coordinator assignment: %v", elevator.HallRequests, newRequests)
 	for f := 0; f < NumFloors; f++ {
 		elevator.HallRequests[f][HallUp] = newRequests[f][HallUp]
 		elevator.HallRequests[f][HallDown] = newRequests[f][HallDown]

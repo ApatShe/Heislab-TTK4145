@@ -61,7 +61,7 @@ type Elevator struct {
 }
 
 // ElevatorIn groups all channels that deliver events into RunElevator.
-// Inputs arrive from: hardware polling, the manager (HRA output), the door
+// Inputs arrive from: hardware polling, the coordinator (HRA output), the door
 // module, the motor watchdog, and the network node (init signal).
 type ElevatorIn struct {
 	Floor             <-chan int

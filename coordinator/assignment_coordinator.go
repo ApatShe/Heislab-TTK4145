@@ -7,14 +7,14 @@ import (
 	"Heislab/node_communication/peers"
 )
 
-// ManagerIn groups all channels that deliver events into RunManager.
-type ManagerIn struct {
+// CoordinatorIn groups all channels that deliver events into RunCoordinator.
+type CoordinatorIn struct {
 	Snapshot   <-chan networknode.NetworkSnapshot // consensus snapshot from network node
 	PeerUpdate <-chan peers.PeerUpdate            // peer list changes from network node
 }
 
-// ManagerOut groups all channels that RunManager writes into.
-type ManagerOut struct {
+// CoordinatorOut groups all channels that RunCoordinator writes into.
+type CoordinatorOut struct {
 	CabRequests  chan<- []bool        // consensused cab requests → elevator FSM
 	HallRequests chan<- [][2]bool     // HRA-assigned matrix → elevator
 	Lights       chan<- RequestLights // HRA-assigned request matrix and active cabRequest → lights
@@ -112,7 +112,7 @@ func extractDesignatedHallRequests(delegatedHallRequests map[string][][2]bool, i
 	return delegatedHallRequests[id]
 }
 
-func RunManager(in ManagerIn, out ManagerOut, id string) {
+func RunCoordinator(in CoordinatorIn, out CoordinatorOut, id string) {
 	activeElevators := map[string]bool{id: true} // always treat self as active
 	//doorInitSent := false
 
@@ -133,7 +133,7 @@ func RunManager(in ManagerIn, out ManagerOut, id string) {
 
 		case snapshot := <-in.Snapshot:
 
-			log.Log("[Manager] Received snapshot iter=%d from node %s with %d elevators, cab requests: %v, hall requests: %v", snapshot.Iter, snapshot.NodeID, len(snapshot.Elevators), snapshot.Elevators[id].CabRequests, snapshot.HallRequests)
+			log.Log("[Coordinator] Received snapshot iter=%d from node %s with %d elevators, cab requests: %v, hall requests: %v", snapshot.Iter, snapshot.NodeID, len(snapshot.Elevators), snapshot.Elevators[id].CabRequests, snapshot.HallRequests)
 			// Always add any node present in the snapshot as active
 			//if !doorInitSent {
 			//	doorInitSent = true
@@ -149,7 +149,7 @@ func RunManager(in ManagerIn, out ManagerOut, id string) {
 			for i, requestState := range consensusCabRequests {
 				consensusCabRequestsBool[i] = networknode.RequestStateToBool(requestState)
 			}
-			log.Log("[Manager] Sending Consensus cab requests to FSM for self: %v", consensusCabRequestsBool)
+			log.Log("[Coordinator] Sending Consensus cab requests to FSM for self: %v", consensusCabRequestsBool)
 			select {
 			case out.CabRequests <- consensusCabRequestsBool:
 			default:

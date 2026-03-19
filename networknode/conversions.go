@@ -59,8 +59,8 @@ type NetworkNodeIn struct {
 
 // NetworkNodeOut groups all channels that RunNetworkNode writes into.
 type NetworkNodeOut struct {
-	Snapshot          chan<- NetworkSnapshot  // consensus state → RunManager
-	PeerUpdate        chan<- peers.PeerUpdate // peer list changes → RunManager
+	Snapshot          chan<- NetworkSnapshot  // consensus state → RunCoordinator
+	PeerUpdate        chan<- peers.PeerUpdate // peer list changes → RunCoordinator
 	ElevatorInitState chan<- elevatorcontroller.ElevatorInitState
 }
 
