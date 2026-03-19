@@ -7,6 +7,7 @@ import (
 	"runtime"
 )
 
+//File with helper functions for using Hall Request Assigner(HRA) algorithm from the course github.
 // Struct members must be public in order to be accessible by json.Marshal/.Unmarshal
 // This means they must start with a capital letter, so we need to use field renaming struct tags to make them camelCase
 

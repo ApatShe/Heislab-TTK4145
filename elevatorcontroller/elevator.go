@@ -93,20 +93,6 @@ func ElevatorUninitialized(cabRequests [NumFloors]bool) *Elevator {
 	}
 }
 
-// InitBetweenFloors moves the motor down until a floor is reached and returns
-// the initial elevator state together with the door-open duration for use by
-// the door timer.
-//func InitBetweenFloors() (Elevator, time.Duration) {
-//	elevator := ElevatorUninitialized()
-//	if elevatordriver.GetFloor() == -1 {
-//		elevatordriver.SetMotorDirection(elevatordriver.MD_Down)
-//		elevator.Direction = elevatordriver.MD_Down
-//	}
-//		elevator.Behaviour = EB_Moving
-//	}
-//	return *elevator, elevator.Config.DoorOpenDuration
-//}
-
 // ---- Command pattern ----
 
 type ElevatorCommand interface {

@@ -114,10 +114,6 @@ func extractDesignatedHallRequests(delegatedHallRequests map[string][][2]bool, i
 
 func RunCoordinator(in CoordinatorIn, out CoordinatorOut, id string) {
 	activeElevators := map[string]bool{id: true} // always treat self as active
-	//doorInitSent := false
-
-	//var lastHallRequests [][2]bool
-	//var lastHallLights [][2]bool
 
 	for {
 		select {
@@ -134,15 +130,6 @@ func RunCoordinator(in CoordinatorIn, out CoordinatorOut, id string) {
 		case snapshot := <-in.Snapshot:
 
 			log.Log("[Coordinator] Received snapshot iter=%d from node %s with %d elevators, cab requests: %v, hall requests: %v", snapshot.Iter, snapshot.NodeID, len(snapshot.Elevators), snapshot.Elevators[id].CabRequests, snapshot.HallRequests)
-			// Always add any node present in the snapshot as active
-			//if !doorInitSent {
-			//	doorInitSent = true
-			//	ownState := snapshot.Elevators[id]
-			//	select {
-			//	case out.DoorInit <- ownState.DoorOpen:
-			//	default:
-			//	}
-			//}
 
 			consensusCabRequests := snapshot.Elevators[id].CabRequests
 			consensusCabRequestsBool := make([]bool, len(consensusCabRequests))
@@ -161,10 +148,6 @@ func RunCoordinator(in CoordinatorIn, out CoordinatorOut, id string) {
 				HallRequests: consensusHallRequests,
 				States:       extractActiveElevatorStates(snapshot, activeElevators),
 			}
-
-			//if len(hraInput.States) == 0 {
-			//	break
-			//}
 
 			delegatedHallRequests := OutputHallRequestAssigner(hraInput)
 			designatedHallRequests := extractDesignatedHallRequests(delegatedHallRequests, id)
