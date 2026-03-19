@@ -13,13 +13,27 @@ import (
 //
 //   TTK4145 Real-Time Programming – Lecture 3
 //   "Ex 5: Cyclic Counter" (timestamp 1:16:00)
-//   [https://youtu.be/0VRZ02npbTM?t=4560](https://youtu.be/0VRZ02npbTM?t=4560)
+//   https://youtu.be/0VRZ02npbTM?t=4560
 //
 // Algorithm summary:
 //   - Discard any received value <= local (counts upward)
 //   - Except: accept Inactive if local is Active (allows reset)
 //   - Except: reject Active if local is Inactive (prevents un-resetting)
 //   - Requires n >= 3 distinct states (satisfied by Unknown/Inactive/Requested/Active)
+//
+// ReconnectedNode extensions:
+//
+//   When received.ReconnectedNode is true (sender just came back from solo):
+//     - propagateResetsToOwn skips the sender entirely — its INACTIVEs are
+//       stale offline serves, not fresh reset signals.
+//     - mergePeerEntry does not allow the sender's INACTIVE to overwrite our
+//       ACTIVE view of the sender (senderIsReconnecting guard).
+//
+//   When localIsReconnecting is true (we ourselves are in the reconnect window):
+//     - mergePeerEntry lifts the isUnResettingState guard on our own entry so
+//       the network's ACTIVE view of what we owe can overwrite our INACTIVE.
+//     - mergePeerEntry also skips the own-entry ACTIVE→INACTIVE reset protection
+//       for the same reason: we want to adopt the network's current picture.
 
 func shouldResetState(local, received RequestState) bool {
 	return local == ACTIVE && received == INACTIVE
@@ -80,7 +94,6 @@ func mergeCabRequests(local, received []RequestState, localID, receivedID, ownID
 func copyHallRequests(src map[string][][2]RequestState) map[string][][2]RequestState {
 	dst := make(map[string][][2]RequestState, len(src))
 	for nodeID, reqs := range src {
-		// Deep copy the slice of [2]RequestState
 		innerCopy := make([][2]RequestState, len(reqs))
 		copy(innerCopy, reqs)
 		dst[nodeID] = innerCopy
@@ -88,7 +101,25 @@ func copyHallRequests(src map[string][][2]RequestState) map[string][][2]RequestS
 	return dst
 }
 
-func mergePeerEntry(local, received [][2]RequestState, isOwnEntry bool) [][2]RequestState {
+// mergePeerEntry merges one nodeID's hall request entry from a received snapshot
+// into the local copy.
+//
+// isOwnEntry         — true when nodeID == local.NodeID (protecting our own entry)
+// localIsReconnecting — true when we are in our own reconnect cooldown window;
+//
+//	lifts the un-reset guard so the network can restore what
+//	we served offline
+//
+// senderIsReconnecting — true when the snapshot sender has ReconnectedNode set;
+//
+//	prevents their stale INACTIVE from overwriting our ACTIVE
+//	view of their entry
+func mergePeerEntry(
+	local, received [][2]RequestState,
+	isOwnEntry bool,
+	localIsReconnecting bool,
+	senderIsReconnecting bool,
+) [][2]RequestState {
 	merged := make([][2]RequestState, len(received))
 	for floor := range received {
 		for btn := range received[floor] {
@@ -96,11 +127,53 @@ func mergePeerEntry(local, received [][2]RequestState, isOwnEntry bool) [][2]Req
 			if local != nil {
 				localState = local[floor][btn]
 			}
-			if isOwnEntry && shouldResetState(localState, received[floor][btn]) {
+
+			switch {
+			// --- Own-entry protection (isOwnEntry == true) ---
+
+			case isOwnEntry && shouldResetState(localState, received[floor][btn]):
+				// A peer is trying to reset our own ACTIVE → INACTIVE.
+				// Normally we block this (only we can reset our own entry).
+				// Exception: if we are reconnecting we WANT the network to
+				// correct us — we may have served this offline and the network
+				// still thinks it's pending.  Allow the reset.
+				if localIsReconnecting {
+					log.Log("[MERGE] own entry floor=%d btn=%d: ACTIVE→INACTIVE allowed (localIsReconnecting)", floor, btn)
+					merged[floor][btn] = received[floor][btn]
+				} else {
+					merged[floor][btn] = localState
+				}
+
+			case isOwnEntry && isUnResettingState(localState, received[floor][btn]):
+				// A peer is trying to un-reset our own INACTIVE → ACTIVE.
+				// Normally we block this (un-resetting is forbidden by the
+				// cyclic counter).
+				// Exception: if we are reconnecting, the network's ACTIVE
+				// represents a request we served while offline — we must adopt
+				// it so the manager can re-assign the floor.
+				if localIsReconnecting {
+					log.Log("[MERGE] own entry floor=%d btn=%d: INACTIVE→ACTIVE allowed (localIsReconnecting)", floor, btn)
+					merged[floor][btn] = received[floor][btn]
+				} else {
+					merged[floor][btn] = localState
+				}
+
+			// --- Sender-reconnecting protection (non-own entry) ---
+
+			case !isOwnEntry && senderIsReconnecting && shouldResetState(localState, received[floor][btn]):
+				// The sender is in its reconnect window.  Its INACTIVE values
+				// are stale offline serves that must not overwrite our ACTIVE
+				// view of it.  Keep our own local state.
+				log.Log("[MERGE] peer entry floor=%d btn=%d: blocking stale INACTIVE from reconnecting sender", floor, btn)
 				merged[floor][btn] = localState
-			} else if isUnResettingState(localState, received[floor][btn]) {
+
+			case isUnResettingState(localState, received[floor][btn]):
+				// Standard cyclic-counter un-reset protection for non-own
+				// entries: never let a peer move us from INACTIVE back to
+				// ACTIVE (that would circumvent the reset protocol).
 				merged[floor][btn] = localState
-			} else {
+
+			default:
 				merged[floor][btn] = returnValidState(localState, received[floor][btn])
 			}
 		}
@@ -108,14 +181,23 @@ func mergePeerEntry(local, received [][2]RequestState, isOwnEntry bool) [][2]Req
 	return merged
 }
 
-func mergeHallRequests(local, received map[string][][2]RequestState, localID string) map[string][][2]RequestState {
+func mergeHallRequests(
+	local, received map[string][][2]RequestState,
+	localID string,
+	localIsReconnecting bool,
+	senderIsReconnecting bool,
+) map[string][][2]RequestState {
 	merged := copyHallRequests(local)
 
 	for nodeID, receivedEntry := range received {
-		// Correct: protect my own entry only
 		isOwnEntry := (nodeID == localID)
-
-		merged[nodeID] = mergePeerEntry(local[nodeID], receivedEntry, isOwnEntry)
+		merged[nodeID] = mergePeerEntry(
+			local[nodeID],
+			receivedEntry,
+			isOwnEntry,
+			localIsReconnecting,
+			senderIsReconnecting,
+		)
 	}
 	return merged
 }
@@ -188,23 +270,28 @@ func mergeElevators(local, received NetworkSnapshot) map[string]ElevatorState {
 	return merged
 }
 
-func FilteredMessage(local, received NetworkSnapshot) NetworkSnapshot {
-	log.Log("FilteredMessage: merging snapshot from %s (iter %d)", received.NodeID, received.Iter)
+// FilteredMessage merges a received snapshot into the local one using the
+// cyclic counter algorithm.
+//
+// localIsReconnecting should be set to currentSnapshot.ReconnectedNode at the
+// call site so the merge layer knows to lift the un-reset guard on our own
+// hall entry (allowing the network to restore requests we served while offline).
+func FilteredMessage(local, received NetworkSnapshot, localIsReconnecting bool) NetworkSnapshot {
+	log.Log("FilteredMessage: merging snapshot from %s (iter %d) reconnecting=%v",
+		received.NodeID, received.Iter, received.ReconnectedNode)
 	merged := local
 	merged.Elevators = mergeElevators(local, received)
-	merged.HallRequests = mergeHallRequests(local.HallRequests, received.HallRequests, local.NodeID)
+	merged.HallRequests = mergeHallRequests(
+		local.HallRequests,
+		received.HallRequests,
+		local.NodeID,
+		localIsReconnecting,
+		received.ReconnectedNode,
+	)
 	log.Log("FilteredMessage: result hallRequests=%v", merged.HallRequests)
 	log.Log("FilteredMessage: result elevators=%v", merged.Elevators)
 	return merged
 }
-
-// shouldAdoptHallRequest returns true when own entry for floorIndex/buttonIndex
-// is INACTIVE and at least one peer has already reached REQUESTED.
-// This is the adoption predicate: case B of the INACTIVE→REQUESTED transition.
-//func shouldAdoptHallRequest(snapshot NetworkSnapshot, floorIndex int, buttonIndex int) bool {
-//	ownRequest := snapshot.HallRequests[snapshot.NodeID][floorIndex][buttonIndex]
-//	return (ownRequest == UNKNOWN || ownRequest == INACTIVE) && isHallRequestKnownByAnyPeer(snapshot, floorIndex, buttonIndex)
-//}
 
 func adoptHallRequestsFromPeers(snapshot NetworkSnapshot) NetworkSnapshot {
 	ownRequests := snapshot.HallRequests[snapshot.NodeID]
@@ -233,12 +320,22 @@ func adoptHallRequestsFromPeers(snapshot NetworkSnapshot) NetworkSnapshot {
 }
 
 // propagateResetsToOwn clears own ACTIVE entries to INACTIVE when the sender
-// of the received snapshot reports INACTIVE for that floor/button in its own entry.
-// This propagates served-request resets from the elevator that served them.
+// of the received snapshot reports INACTIVE for that floor/button in its own
+// entry.  This propagates served-request resets from the elevator that served them.
+//
+// If the sender has ReconnectedNode set, its INACTIVEs are stale offline serves
+// and must NOT be treated as fresh reset signals — we return early.
 func propagateResetsToOwn(snapshot, received NetworkSnapshot) NetworkSnapshot {
 	if received.NodeID == snapshot.NodeID {
 		return snapshot
 	}
+
+	// Guard: sender is in reconnect window — its INACTIVEs are not trustworthy.
+	if received.ReconnectedNode {
+		log.Log("[propagateResetsToOwn] skipping sender=%s (ReconnectedNode=true)", received.NodeID)
+		return snapshot
+	}
+
 	own := snapshot.HallRequests[snapshot.NodeID]
 	if own == nil {
 		return snapshot
@@ -263,18 +360,6 @@ func propagateResetsToOwn(snapshot, received NetworkSnapshot) NetworkSnapshot {
 	return snapshot
 }
 
-//func isHallRequestKnownByAnyPeer(snapshot NetworkSnapshot, floorIndex int, buttonIndex int) bool {
-//	for peerID, peerRequests := range snapshot.HallRequests {
-//		if peerID == snapshot.NodeID {
-//			continue
-//		}
-//		if peerRequests != nil && peerRequests[floorIndex][buttonIndex] >= REQUESTED {
-//			return true
-//		}
-//	}
-//	return false
-//}
-
 func allLivePeersKnowRequestedCabs(
 	snapshot NetworkSnapshot,
 	livePeerIDs []string,
@@ -295,24 +380,24 @@ func allLivePeersKnowRequestedCabs(
 
 	if len(consensusPeers) == 0 {
 		soloMode := len(livePeerIDs) <= 1
-		log.Log("allLivePeersKnowRequestedCabs : no consensusPeers, soloMode=%v → %v", soloMode, soloMode)
+		log.Log("allLivePeersKnowRequestedCabs: no consensusPeers, soloMode=%v → %v", soloMode, soloMode)
 		return soloMode
 	}
 
 	for _, peerID := range consensusPeers {
 		peerElev, ok := knownStates[peerID].Elevators[snapshot.NodeID]
 		if !ok {
-			log.Log("allLivePeersKnowRequestedCabs : peer=%s has no entry for nodeID=%s", peerID, snapshot.NodeID)
+			log.Log("allLivePeersKnowRequestedCabs: peer=%s has no entry for nodeID=%s", peerID, snapshot.NodeID)
 			return false
 		}
 		peerStatus := peerElev.CabRequests[floor]
-		log.Log("allLivePeersKnowRequestedCabs : peer=%s status=%d (need >= REQUESTED=%d)", peerID, peerStatus, REQUESTED)
+		log.Log("allLivePeersKnowRequestedCabs: peer=%s status=%d (need >= REQUESTED=%d)", peerID, peerStatus, REQUESTED)
 		if peerStatus < REQUESTED {
-			log.Log("allLivePeersKnowRequestedCabs : peer %s vetoes (status %d)", peerID, peerStatus)
+			log.Log("allLivePeersKnowRequestedCabs: peer %s vetoes (status %d)", peerID, peerStatus)
 			return false
 		}
 	}
-	log.Log("allLivePeersKnowRequestedCabs : all consensusPeers >= REQUESTED → ACTIVE")
+	log.Log("allLivePeersKnowRequestedCabs: all consensusPeers >= REQUESTED → ACTIVE")
 	return true
 }
 
@@ -373,7 +458,6 @@ func AdvanceCabToActive(
 			if allLivePeersKnowRequestedCabs(snapshot, livePeerIDs, knownStates, floor) {
 				log.Log("AdvanceCabToActive: floor=%d REQUESTED→ACTIVE peers=%v", floor, livePeerIDs)
 				elev.CabRequests[floor] = ACTIVE
-
 			} else {
 				log.Log("AdvanceCabToActive: floor=%d REQUESTED but peers not ready peers=%v", floor, livePeerIDs)
 			}
@@ -383,11 +467,10 @@ func AdvanceCabToActive(
 	return snapshot
 }
 
-// AdvanceToActive promotes own hall requests from REQUESTED to ACTIVE for every
-// floor/button where all live peers have reached at least REQUESTED.
+// AdvanceHallToActive promotes own hall requests from REQUESTED to ACTIVE for
+// every floor/button where all live peers have reached at least REQUESTED.
 // Requiring full peer consensus before going ACTIVE ensures propagateResetsToOwn
 // is never triggered by a peer that is simply unaware of the request.
-// filter_message.go
 func AdvanceHallToActive(
 	snapshot NetworkSnapshot,
 	livePeerIDs []string,
@@ -401,14 +484,13 @@ func AdvanceHallToActive(
 		for b := 0; b < 2; b++ {
 			if ownRequests[f][b] == REQUESTED {
 				if allLivePeersKnowRequestedHall(snapshot, livePeerIDs, knownStates, f, b) {
-					log.Log("AdvanceToActive: floor=%d btn=%d REQUESTED→ACTIVE peers=%v", f, b, livePeerIDs)
+					log.Log("AdvanceHallToActive: floor=%d btn=%d REQUESTED→ACTIVE peers=%v", f, b, livePeerIDs)
 					ownRequests[f][b] = ACTIVE
 				} else {
-					log.Log("AdvanceToActive: floor=%d btn=%d REQUESTED but peers not ready peers=%v", f, b, livePeerIDs)
+					log.Log("AdvanceHallToActive: floor=%d btn=%d REQUESTED but peers not ready peers=%v", f, b, livePeerIDs)
 				}
 			}
 		}
-
 	}
 	snapshot.HallRequests[snapshot.NodeID] = ownRequests
 	return snapshot

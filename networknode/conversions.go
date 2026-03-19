@@ -10,10 +10,10 @@ import (
 type RequestState uint8
 
 const (
-	UNKNOWN RequestState = iota
-	INACTIVE
-	REQUESTED
-	ACTIVE
+	UNKNOWN   RequestState = iota
+	INACTIVE               // 1
+	REQUESTED              // 2
+	ACTIVE                 // 3
 )
 
 type ElevatorState struct {
@@ -30,6 +30,16 @@ type NetworkSnapshot struct {
 	HallRequests map[string][][2]RequestState `json:"hallRequests"`
 	Elevators    map[string]ElevatorState     `json:"states"`
 	Iter         uint64                       `json:"iter"`
+
+	// ReconnectedNode is true while the sending node is in its reconnect
+	// cooldown window (set at self-lost, cleared after reconnectCooldownTicks).
+	// Peers use this flag to:
+	//   (a) skip propagateResetsToOwn — sender's INACTIVEs are stale offline serves
+	//   (b) not let sender's INACTIVE overwrite their own ACTIVE view of the sender
+	// The sending node uses its own copy of this flag to:
+	//   (c) lift the isUnResettingState guard on its own entry so it can adopt
+	//       the network's ACTIVE perspective of what it still owes.
+	ReconnectedNode bool `json:"reconnectedNode"`
 }
 
 // HallUpIdx and HallDownIdx are the array indices for the two-element button

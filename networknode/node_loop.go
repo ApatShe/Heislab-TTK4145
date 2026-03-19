@@ -13,6 +13,12 @@ import (
 const (
 	peerPort     = 15657
 	snapshotPort = 15667
+
+	// reconnectCooldownTicks is the number of 10 ms ticks that ReconnectedNode
+	// stays true after a node re-joins the network.  100 ticks = 1 second gives
+	// the network enough time to converge on the reconnecting node's true debts
+	// before it starts accepting reset signals from peers again.
+	reconnectCooldownTicks = 100
 )
 
 func RunNetworkNode(
@@ -48,6 +54,22 @@ func RunNetworkNode(
 	wasSolo := false
 	livePeerIDs := []string{id}
 
+	// lostPeers is a persistent set of every peer ID that has ever been seen
+	// to leave the network.  It is never cleared — once a peer has been lost
+	// it is remembered for the lifetime of this node so we can detect when it
+	// reconnects and treat it appropriately.
+	lostPeers := make(map[string]bool)
+
+	// reconnectCooldown counts down from reconnectCooldownTicks to 0 after
+	// this node itself reconnects.  While non-zero, currentSnapshot.ReconnectedNode
+	// is true.
+	//
+	// Critically, the flag is set at self-lost time (not reconnect time), so
+	// every snapshot broadcast during the solo window already carries it.
+	// There is no race between the ticker firing and the peerUpdate reconnect
+	// branch: by the time we're back on the network the flag is already set.
+	reconnectCooldown := 0
+
 	sendSnapshot := func() {
 		if !readyToBroadcast {
 			return
@@ -55,7 +77,8 @@ func RunNetworkNode(
 		if currentSnapshot.Elevators[id].Floor == -1 {
 			return
 		}
-		log.Log("[SNAPSHOT->MGR] sending snapshot to manager: hallRequests=%v floor=%d, Service Status: %t", currentSnapshot.HallRequests[id], currentSnapshot.Elevators[id].Floor, currentSnapshot.Elevators[id].IsOutOfService)
+		log.Log("[SNAPSHOT->MGR] sending snapshot to manager: hallRequests=%v floor=%d, Service Status: %t",
+			currentSnapshot.HallRequests[id], currentSnapshot.Elevators[id].Floor, currentSnapshot.Elevators[id].IsOutOfService)
 		select {
 		case out.Snapshot <- currentSnapshot:
 		default:
@@ -92,7 +115,10 @@ func RunNetworkNode(
 			}
 			log.Log("[INIT] enableBroadcast fired, sending elevator init state: %v to elevator", cabRequests)
 			select {
-			case out.ElevatorInitState <- elevatorcontroller.ElevatorInitState{CabRequests: cabRequests, DoorOpen: currentSnapshot.Elevators[id].DoorOpen}:
+			case out.ElevatorInitState <- elevatorcontroller.ElevatorInitState{
+				CabRequests: cabRequests,
+				DoorOpen:    currentSnapshot.Elevators[id].DoorOpen,
+			}:
 			default:
 			}
 		}
@@ -109,13 +135,57 @@ func RunNetworkNode(
 			if !readyToBroadcast {
 				break
 			}
+
+			// Tick down the reconnect cooldown.  When it reaches zero the node
+			// has been back on the network long enough that peers will have
+			// converged on the correct hall states, and we can stop signalling
+			// ReconnectedNode.
+			if reconnectCooldown > 0 {
+				reconnectCooldown--
+				if reconnectCooldown == 0 {
+					currentSnapshot.ReconnectedNode = false
+					log.Log("[RECONNECT] cooldown expired, clearing ReconnectedNode flag")
+				}
+			}
+
+			// While a peer is known-lost, mirror our own hall entry into their
+			// slot in currentSnapshot.  When that peer reconnects it receives
+			// our snapshot, sees our ACTIVE entries under its own nodeID, and
+			// adopts them because the isUnResettingState guard is lifted for
+			// nodes that are in their reconnect window (ReconnectedNode=true).
+			// This ensures unserved requests we observed while the peer was
+			// away are not silently dropped.
+			for peerID := range lostPeers {
+				isLive := false
+				for _, liveID := range livePeerIDs {
+					if liveID == peerID {
+						isLive = true
+						break
+					}
+				}
+				if isLive {
+					// Peer is back on the network — stop overwriting its slot
+					// and let the normal merge algorithm take over.
+					continue
+				}
+				ownEntry := currentSnapshot.HallRequests[id]
+				if ownEntry == nil {
+					continue
+				}
+				mirrored := make([][2]RequestState, len(ownEntry))
+				copy(mirrored, ownEntry)
+				currentSnapshot.HallRequests[peerID] = mirrored
+				log.Log("[LOST MIRROR] mirroring own halls to lost peer=%s entry", peerID)
+			}
+
 			iter++
 			currentSnapshot.Iter = iter
 			knownStates[id] = currentSnapshot
 			log.Log("[TX] iter=%d hallRequests=%v elevators=%v", iter, currentSnapshot.HallRequests[id], currentSnapshot.Elevators[id])
 
 			for knownStates, id := range currentSnapshot.Elevators {
-				log.Log("[STATUS] perspective %v sees elevator %v with Service Status: %t", id, knownStates, currentSnapshot.Elevators[string(knownStates)].IsOutOfService)
+				log.Log("[STATUS] perspective %v sees elevator %v with Service Status: %t",
+					id, knownStates, currentSnapshot.Elevators[string(knownStates)].IsOutOfService)
 			}
 
 			// Solo mode: advance cabs without peer consensus.
@@ -137,7 +207,10 @@ func RunNetworkNode(
 			}
 			currentCabRequests := currentSnapshot.Elevators[id].CabRequests
 			currentSnapshot.Elevators[id] = LocalElevatorToElevatorState(elevatorState, currentCabRequests)
-			log.Log("[ELEV STATE] updated snapshot floor=%d dir=%s beh=%s", elevatorState.Floor, elevatorcontroller.DirnToString(elevatorState.Direction), elevatorState.Behaviour.String())
+			log.Log("[ELEV STATE] updated snapshot floor=%d dir=%s beh=%s",
+				elevatorState.Floor,
+				elevatorcontroller.DirnToString(elevatorState.Direction),
+				elevatorState.Behaviour.String())
 
 		case cabButton := <-in.CabButton:
 			log.Log("[CAB BTN] received button event %v", cabButton)
@@ -160,18 +233,39 @@ func RunNetworkNode(
 				}
 			}
 
+			// Record every newly-lost non-self peer in the persistent set.
+			for _, lostID := range peerUpdate.Lost {
+				if lostID != id {
+					log.Log("[LOST PEERS] remembering lost peer=%s", lostID)
+					lostPeers[lostID] = true
+				}
+			}
+
 			if selfLost {
-				log.Log("[PEER] self lost from network, entering solo mode")
+				// Set ReconnectedNode immediately at disconnect time — NOT at
+				// reconnect time.  This is the key invariant: every snapshot we
+				// broadcast from this point forward carries the flag, so peers
+				// will never misread our offline INACTIVEs as fresh reset signals
+				// regardless of timing.
+				log.Log("[PEER] self lost from network, entering solo mode, setting ReconnectedNode=true")
+				currentSnapshot.ReconnectedNode = true
 				livePeerIDs = []string{id}
 				wasSolo = true
+
 			} else if wasSolo && len(peerUpdate.Peers) > 1 {
-				log.Log("[PEER] reconnecting after solo, resetting own halls to UNKNOWN for peer merge")
+				log.Log("[PEER] reconnecting after solo, resetting own halls to UNKNOWN for peer merge, starting reconnect cooldown=%d ticks", reconnectCooldownTicks)
 				wasSolo = false
+
+				// Start the cooldown.  ReconnectedNode is already true from
+				// when selfLost fired — we just need to schedule its expiry.
+				reconnectCooldown = reconnectCooldownTicks
+
 				ownHalls := make([][2]RequestState, elevatorcontroller.NumFloors)
 				for i := range ownHalls {
 					ownHalls[i] = [2]RequestState{UNKNOWN, UNKNOWN}
 				}
 				currentSnapshot.HallRequests[id] = ownHalls
+
 				seen := map[string]bool{id: true}
 				newLive := []string{id}
 				for _, peer := range peerUpdate.Peers {
@@ -181,6 +275,7 @@ func RunNetworkNode(
 					}
 				}
 				livePeerIDs = newLive
+
 			} else if len(peerUpdate.Peers) > 0 {
 				seen := map[string]bool{id: true}
 				newLive := []string{id}
@@ -203,20 +298,34 @@ func RunNetworkNode(
 			}
 
 		case receivedSnapshot := <-snapshotRx:
-			log.Log("[SNAPSHOT RX] received snapshot iter=%d from node %s with %d elevators and hall requests: %v", receivedSnapshot.Iter, receivedSnapshot.NodeID, len(receivedSnapshot.Elevators), receivedSnapshot.HallRequests)
-			log.Log("[SNAPSHOT RX] service status of received elevators: ")
+			log.Log("[SNAPSHOT RX] received snapshot iter=%d from node %s with %d elevators and hall requests: %v",
+				receivedSnapshot.Iter, receivedSnapshot.NodeID, len(receivedSnapshot.Elevators), receivedSnapshot.HallRequests)
+			log.Log("[SNAPSHOT RX] service status of received elevators:")
 			for nodeID, elevState := range receivedSnapshot.Elevators {
 				log.Log("[SNAPSHOT RX]   nodeID=%s isOutOfService=%t", nodeID, elevState.IsOutOfService)
 			}
+			if receivedSnapshot.ReconnectedNode {
+				log.Log("[SNAPSHOT RX] sender=%s is in reconnect window (ReconnectedNode=true), propagateResetsToOwn will be skipped", receivedSnapshot.NodeID)
+			}
+
 			knownStates[receivedSnapshot.NodeID] = receivedSnapshot
-			currentSnapshot = FilteredMessage(currentSnapshot, receivedSnapshot)
+
+			// Pass our own ReconnectedNode flag into FilteredMessage so the
+			// merge layer can lift the isUnResettingState guard on our own
+			// entry — allowing us to adopt the network's ACTIVE perspective
+			// of what we still owe after our offline stint.
+			currentSnapshot = FilteredMessage(currentSnapshot, receivedSnapshot, currentSnapshot.ReconnectedNode)
+
+			// propagateResetsToOwn checks received.ReconnectedNode internally
+			// and returns early if set — stale offline INACTIVEs must never
+			// clear our ACTIVE hall requests.
 			currentSnapshot = propagateResetsToOwn(currentSnapshot, receivedSnapshot)
 			currentSnapshot = adoptHallRequestsFromPeers(currentSnapshot)
 			currentSnapshot = AdvanceHallToActive(currentSnapshot, livePeerIDs, knownStates)
 			currentSnapshot = AdvanceCabToActive(currentSnapshot, livePeerIDs, knownStates)
 
-			// Settle own UNKNOWN halls — any that survived the merge are genuinely
-			// unknown to all peers, so INACTIVE is correct
+			// Settle own UNKNOWN halls — any that survived the merge are
+			// genuinely unknown to all peers, so INACTIVE is correct.
 			ownHalls := currentSnapshot.HallRequests[id]
 			for floor := range ownHalls {
 				for btn := range ownHalls[floor] {
@@ -272,7 +381,8 @@ func markHallButtonAsRequested(snapshot NetworkSnapshot, nodeID string, button e
 		snapshot.HallRequests[nodeID] = newReqs
 		log.Log("[HALL BTN] marked as REQUESTED for nodeID=%s floor=%d btn=%d", nodeID, button.Floor, button.Button)
 	} else {
-		log.Log("[HALL BTN] floor=%d btn=%d already at state=%d, skipping", button.Floor, button.Button, ownRequests[button.Floor][buttonIndex])
+		log.Log("[HALL BTN] floor=%d btn=%d already at state=%d, skipping",
+			button.Floor, button.Button, ownRequests[button.Floor][buttonIndex])
 	}
 	return snapshot
 }
@@ -327,7 +437,8 @@ func newNetworkSnapshot(id string) NetworkSnapshot {
 		Elevators: map[string]ElevatorState{
 			id: ownElevatorState,
 		},
-		Iter: 0,
+		Iter:            0,
+		ReconnectedNode: false,
 	}
 }
 
