@@ -1,7 +1,6 @@
 package networknode
 
 import (
-	log "Heislab/Log"
 	elevatorcontroller "Heislab/elevatorcontroller"
 	elevatordriver "Heislab/elevatordriver"
 	"Heislab/node_communication/peers"
@@ -31,14 +30,6 @@ type NetworkSnapshot struct {
 	Elevators    map[string]ElevatorState     `json:"states"`
 	Iter         uint64                       `json:"iter"`
 
-	// ReconnectedNode is true while the sending node is in its reconnect
-	// cooldown window (set at self-lost, cleared after reconnectCooldownTicks).
-	// Peers use this flag to:
-	//   (a) skip propagateResetsToOwn — sender's INACTIVEs are stale offline serves
-	//   (b) not let sender's INACTIVE overwrite their own ACTIVE view of the sender
-	// The sending node uses its own copy of this flag to:
-	//   (c) lift the isUnResettingState guard on its own entry so it can adopt
-	//       the network's ACTIVE perspective of what it still owes.
 	ReconnectedNode bool `json:"reconnectedNode"`
 }
 
@@ -49,23 +40,20 @@ const (
 	HallDownIdx = elevatorcontroller.HallDown // = 1
 )
 
-// NetworkNodeIn groups all channels that deliver events into RunNetworkNode.
 type NetworkNodeIn struct {
-	CabButton      <-chan elevatordriver.ButtonEvent  // local cab button presses
-	HallButton     <-chan elevatordriver.ButtonEvent  // local hall button presses
-	ElevatorState  <-chan elevatorcontroller.Elevator // local elevator FSM state
-	ServedRequests <-chan elevatordriver.ButtonEvent  // served requests to clear
+	CabButton      <-chan elevatordriver.ButtonEvent
+	HallButton     <-chan elevatordriver.ButtonEvent
+	ElevatorState  <-chan elevatorcontroller.Elevator
+	ServedRequests <-chan elevatordriver.ButtonEvent
 }
 
-// NetworkNodeOut groups all channels that RunNetworkNode writes into.
 type NetworkNodeOut struct {
-	Snapshot          chan<- NetworkSnapshot  // consensus state → RunManager
-	PeerUpdate        chan<- peers.PeerUpdate // peer list changes → RunManager
+	Snapshot          chan<- NetworkSnapshot
+	PeerUpdate        chan<- peers.PeerUpdate
 	ElevatorInitState chan<- elevatorcontroller.ElevatorInitState
 }
 
 func LocalElevatorToElevatorState(elevator elevatorcontroller.Elevator, cabRequests []RequestState) ElevatorState {
-	log.Log("[CONVERSION] Making snapshot with IsOutOfService=%t", elevator.IsOutOfService)
 	return ElevatorState{
 		Behaviour:      elevator.Behaviour.String(),
 		Floor:          elevator.Floor,

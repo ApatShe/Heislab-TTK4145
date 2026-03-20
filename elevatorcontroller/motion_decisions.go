@@ -1,7 +1,6 @@
 package elevatorcontroller
 
 import (
-	log "Heislab/Log"
 	elevatordriver "Heislab/elevatordriver"
 )
 
@@ -67,9 +66,6 @@ func CabRequestShouldClearImmediately(elevator *Elevator, btnFloor int) bool {
 	return elevator.Floor == btnFloor && elevator.Behaviour == EB_DoorOpen
 }
 
-// RequestsClearAtCurrentFloor clears served requests and returns cleared hall
-// requests so RunElevator can notify the Manager via servedChan.
-// No lamp calls — RunLights owns all lamps via elevator state broadcast.
 func RequestsClearAtCurrentFloor(elevator *Elevator) []elevatordriver.ButtonEvent {
 	served := []elevatordriver.ButtonEvent{}
 
@@ -107,9 +103,7 @@ func RequestsClearAtCurrentFloor(elevator *Elevator) []elevatordriver.ButtonEven
 	return served
 }
 
-// replaceHallRequests writes the Manager-assigned hall matrix into the elevator.
 func replaceHallRequests(elevator *Elevator, newRequests [][2]bool) {
-	// log.Log("[FSM] Replacing hall request matrix %v with manager assignment: %v", elevator.HallRequests, newRequests)
 	for f := 0; f < NumFloors; f++ {
 		elevator.HallRequests[f][HallUp] = newRequests[f][HallUp]
 		elevator.HallRequests[f][HallDown] = newRequests[f][HallDown]
@@ -117,7 +111,6 @@ func replaceHallRequests(elevator *Elevator, newRequests [][2]bool) {
 }
 
 func RequestsChooseDirection(elevator *Elevator) DirnBehaviourPair {
-	log.Log("[FSM] ChooseDirection: floor=%d dir=%s above=%v below=%v here=%v", elevator.Floor, DirnToString(elevator.Direction), RequestsAbove(elevator), RequestsBelow(elevator), RequestsHere(elevator))
 
 	switch elevator.Direction {
 	case elevatordriver.MD_Up:

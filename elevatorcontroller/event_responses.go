@@ -1,13 +1,9 @@
 package elevatorcontroller
 
 import (
-	log "Heislab/Log"
 	elevatordriver "Heislab/elevatordriver"
 )
 
-// FsmActOnBehaviourPair writes direction+behaviour into elevator and returns
-// the hardware commands to execute alongside any served hall requests.
-// Only caller of RequestsClearAtCurrentFloor.
 func FsmActOnBehaviourPair(elevator *Elevator, pair DirnBehaviourPair) ([]elevatordriver.ButtonEvent, []ElevatorCommand) {
 	elevator.Direction = pair.Direction
 	elevator.Behaviour = pair.Behaviour
@@ -34,7 +30,6 @@ func FsmActOnBehaviourPair(elevator *Elevator, pair DirnBehaviourPair) ([]elevat
 }
 
 func FsmOnCabRequests(elevator *Elevator, cabRequests []bool) ([]elevatordriver.ButtonEvent, []ElevatorCommand) {
-	log.Log("[FSM] CabRequestsUpdate: floor=%d dir=%s beh=%s cabRequests=%v", elevator.Floor, DirnToString(elevator.Direction), elevator.Behaviour.String(), cabRequests)
 
 	replaceCabRequests(elevator, cabRequests)
 
@@ -52,7 +47,6 @@ func FsmOnCabRequests(elevator *Elevator, cabRequests []bool) ([]elevatordriver.
 		}
 	}
 
-	log.Log("[FSM] New state after cab sync:")
 	ElevatorPrint(elevator)
 	return served, commands
 }
@@ -61,11 +55,7 @@ func replaceCabRequests(elevator *Elevator, cabRequests []bool) {
 	copy(elevator.CabRequests[:], cabRequests)
 }
 
-// FsmOnHallRequestsUpdate replaces the elevator's hall-request matrix with the
-// HRA-assigned matrix received from the manager after network consensus.
-// If the elevator is idle it acts immediately on any newly assigned requests.
 func FsmOnHallRequestsUpdate(elevator *Elevator, newRequests [][2]bool) ([]elevatordriver.ButtonEvent, []ElevatorCommand) {
-	log.Log("[FSM] HallRequestsUpdate: floor=%d dir=%s beh=%s requests=%v", elevator.Floor, DirnToString(elevator.Direction), elevator.Behaviour.String(), newRequests)
 
 	replaceHallRequests(elevator, newRequests)
 
@@ -97,13 +87,11 @@ func FsmOnHallRequestsUpdate(elevator *Elevator, newRequests [][2]bool) ([]eleva
 		}
 	}
 
-	log.Log("[FSM] New state:")
 	ElevatorPrint(elevator)
 	return served, commands
 }
 
 func FsmOnFloorArrival(elevator *Elevator, newFloor int) ([]elevatordriver.ButtonEvent, []ElevatorCommand) {
-	log.Log("[FSM] Floor arrival: newFloor=%d dir=%s beh=%s", newFloor, DirnToString(elevator.Direction), elevator.Behaviour.String())
 
 	elevator.Floor = newFloor
 	commands := []ElevatorCommand{}
@@ -112,23 +100,19 @@ func FsmOnFloorArrival(elevator *Elevator, newFloor int) ([]elevatordriver.Butto
 	switch elevator.Behaviour {
 	case EB_Moving:
 		if HasNoRequests(elevator) {
-			log.Log("[FSM] No pending requests — switching to idle")
 			_, stopCmds := FsmActOnBehaviourPair(elevator, DirnBehaviourPair{elevator.Direction, EB_Idle})
 			commands = append(commands, stopCmds...)
 
 		} else if RequestsShouldStop(elevator) {
-			log.Log("[FSM] Requests indicate stop at floor %d — opening door", newFloor)
 			var stopCmds []ElevatorCommand
 			served, stopCmds = FsmActOnBehaviourPair(elevator, DirnBehaviourPair{elevator.Direction, EB_DoorOpen})
 			commands = append(commands, stopCmds...)
 
 		} else if elevator.Direction == elevatordriver.MD_Down && !RequestsBelow(elevator) && RequestsAbove(elevator) {
-			log.Log("[FSM] Started between floors moving down but all requests are above — reversing")
 			var stopCmds []ElevatorCommand
 			served, stopCmds = FsmActOnBehaviourPair(elevator, RequestsChooseDirection(elevator))
 			commands = append(commands, stopCmds...)
 		}
-		// else: continue moving, nothing extra
 
 	default:
 	}
@@ -136,22 +120,15 @@ func FsmOnFloorArrival(elevator *Elevator, newFloor int) ([]elevatordriver.Butto
 	return served, commands
 }
 
-// FsmOnDoorClose is called when the door-close event arrives from the door module.
 func FsmOnDoorClose(elevator *Elevator) ([]elevatordriver.ButtonEvent, []ElevatorCommand) {
-	log.Log("[FSM] Door close event received: floor=%d dir=%s beh=%s", elevator.Floor, DirnToString(elevator.Direction), elevator.Behaviour.String())
 
 	switch elevator.Behaviour {
 	case EB_DoorOpen:
 		served, commands := FsmActOnBehaviourPair(elevator, RequestsChooseDirection(elevator))
-		// log.Log("[FSM] New state:")
-		// ElevatorPrint(elevator)
 		return served, commands
 
 	default:
-		log.Log("[FSM] Door close ignored — behaviour=%s", elevator.Behaviour.String())
 	}
 
-	// log.Log("[FSM] New state:")
-	// ElevatorPrint(elevator)
 	return nil, nil
 }

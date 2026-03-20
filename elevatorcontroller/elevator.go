@@ -1,7 +1,6 @@
 package elevatorcontroller
 
 import (
-	log "Heislab/Log"
 	elevatordriver "Heislab/elevatordriver"
 	"fmt"
 	"time"
@@ -42,9 +41,6 @@ type Config struct {
 	DoorOpenDuration time.Duration
 }
 
-// ElevatorInitState carries the full recovered state the FSM needs
-// before it can safely start processing requests. Sent once by the
-// network node after peer recovery completes.
 type ElevatorInitState struct {
 	CabRequests []bool
 	DoorOpen    bool
@@ -55,14 +51,11 @@ type Elevator struct {
 	Floor          int
 	Direction      elevatordriver.MotorDirection
 	CabRequests    [NumFloors]bool
-	HallRequests   [NumFloors][2]bool // [floor][0=up, 1=down]
+	HallRequests   [NumFloors][2]bool
 	IsOutOfService bool
 	Config         Config
 }
 
-// ElevatorIn groups all channels that deliver events into RunElevator.
-// Inputs arrive from: hardware polling, the manager (HRA output), the door
-// module, the motor watchdog, and the network node (init signal).
 type ElevatorIn struct {
 	Floor             <-chan int
 	CabRequests       <-chan []bool
@@ -72,15 +65,14 @@ type ElevatorIn struct {
 	ElevatorInitState <-chan ElevatorInitState
 }
 
-// ElevatorOut groups all channels that RunElevator writes into.
 type ElevatorOut struct {
-	NetworkState      chan<- Elevator                   // broadcast to RunNetworkNode
-	LightsState       chan<- Elevator                   // broadcast to RunLights
-	ServedRequests    chan<- elevatordriver.ButtonEvent // cleared hall requests → RunNetworkNode
-	DoorOpen          chan<- struct{}                   // open-door signal → RunDoor
-	ResetMotorTimer   chan<- struct{}                   // keep motor watchdog alive
-	StopMotorTimer    chan<- struct{}                   // disarm motor watchdog when motor stops
-	ConfirmDoorClosed chan<- struct{}                   // signal to door module that door is closed on startup
+	NetworkState      chan<- Elevator
+	LightsState       chan<- Elevator
+	ServedRequests    chan<- elevatordriver.ButtonEvent
+	DoorOpen          chan<- struct{}
+	ResetMotorTimer   chan<- struct{}
+	StopMotorTimer    chan<- struct{}
+	ConfirmDoorClosed chan<- struct{}
 }
 
 func ElevatorUninitialized(cabRequests [NumFloors]bool) *Elevator {
@@ -92,20 +84,6 @@ func ElevatorUninitialized(cabRequests [NumFloors]bool) *Elevator {
 		CabRequests: cabRequests,
 	}
 }
-
-// InitBetweenFloors moves the motor down until a floor is reached and returns
-// the initial elevator state together with the door-open duration for use by
-// the door timer.
-//func InitBetweenFloors() (Elevator, time.Duration) {
-//	elevator := ElevatorUninitialized()
-//	if elevatordriver.GetFloor() == -1 {
-//		elevatordriver.SetMotorDirection(elevatordriver.MD_Down)
-//		elevator.Direction = elevatordriver.MD_Down
-//	}
-//		elevator.Behaviour = EB_Moving
-//	}
-//	return *elevator, elevator.Config.DoorOpenDuration
-//}
 
 // ---- Command pattern ----
 
@@ -119,7 +97,6 @@ type CmdDoorRequestCmd struct{}
 func (c CmdSetMotorDirectionCmd) execute(out ElevatorOut) {
 	elevatordriver.SetMotorDirection(c.Dir)
 	if c.Dir != elevatordriver.MD_Stop {
-		log.Log("[elevator] motor command: %s, resetting motor timer", DirnToString(c.Dir))
 		out.ResetMotorTimer <- struct{}{}
 	} else {
 		select {

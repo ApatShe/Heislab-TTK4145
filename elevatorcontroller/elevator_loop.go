@@ -1,27 +1,12 @@
 package elevatorcontroller
 
 import (
-	log "Heislab/Log"
 	elevatordriver "Heislab/elevatordriver"
 	"time"
 )
 
-// RunElevator runs the elevator finite state machine.
-//
-// Two distinct order paths:
-//   - in.CabButton  — cab button events arriving directly from hardware polling.
-//   - in.HallRequests — full hall-request matrix pushed by the manager after
-//     the HRA has run and the network has reached consensus.
-//
-// Hall button presses never arrive here directly; they travel:
-//
-//	button → RunNetworkNode → manager/HRA → network broadcast → consensus
-//	→ manager pushes [][2]bool matrix → in.HallRequests → here.
 func RunElevator(in ElevatorIn, out ElevatorOut) {
-	// Block until NetworkNode signals that peer state has been recovered.
-	// This prevents the motor from starting before cab requests are known.
 	initState := <-in.ElevatorInitState
-	log.Log("[INIT] elevator uninitialized, recovered/initial cab requests: %v", initState.CabRequests)
 
 	var cabArray [NumFloors]bool
 	for i, v := range initState.CabRequests {
@@ -37,7 +22,6 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 		elevator.Direction = elevatordriver.MD_Down
 		elevator.Behaviour = EB_Moving
 		out.ResetMotorTimer <- struct{}{}
-		log.Log("[elevator] between floors on startup — moving down to find floor")
 	} else if initState.DoorOpen {
 		elevator.Behaviour = EB_DoorOpen
 
@@ -45,13 +29,11 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 		case out.DoorOpen <- struct{}{}:
 		default:
 		}
-		log.Log("[elevator] restoring door-open state from peer snapshot")
 	} else {
 		select {
 		case out.ConfirmDoorClosed <- struct{}{}:
 		default:
 		}
-		log.Log("[elevator] no door state to recover — confirming door closed")
 	}
 
 	broadcastState := func() {
@@ -74,12 +56,10 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 
 	reportServedRequests := func(served []elevatordriver.ButtonEvent) {
 		for _, btn := range served {
-			log.Log("[SERVED] reporting served request: floor=%d btn=%d", btn.Floor, btn.Button)
 			out.ServedRequests <- btn
 		}
 	}
 
-	// log.Log("Elevator controller started!")
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
@@ -91,12 +71,9 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 		select {
 
 		case newCabRequest := <-in.CabRequests:
-			log.Log("[elevator] cab request update: %v", newCabRequest)
 			served, commands = FsmOnCabRequests(elevator, newCabRequest)
-			log.Log("[elevator] served: %v", served)
 
 		case newHallRequests := <-in.HallRequests:
-			// log.Log("Hall request update from manager\n")
 			served, commands = FsmOnHallRequestsUpdate(elevator, newHallRequests)
 
 		case floor := <-in.Floor:
@@ -105,7 +82,6 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 		case floor := <-in.Floor:
 			served, commands = FsmOnFloorArrival(elevator, floor)
 
-			// If floor advanced, that's evidence of motion → reset watchdog and clear OOS.
 			if elevator.Floor != lastFloor {
 				lastFloor = elevator.Floor
 				select {
@@ -113,7 +89,6 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 				default:
 				}
 				if elevator.IsOutOfService {
-					log.Log("[elevator] recovered: floor changed → clearing IsOutOfService")
 					elevator.IsOutOfService = false
 				}
 			}
@@ -123,8 +98,6 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 
 		case <-in.MotorStall:
 			if elevator.Behaviour == EB_Moving && elevator.Direction != elevatordriver.MD_Stop {
-				log.Log("[elevator] motor stall detected! Degrading gracefully.")
-				log.Log("[elevator] OUT of service status WAS: %t", elevator.IsOutOfService)
 			}
 
 			elevator.Direction = elevatordriver.MD_Stop
