@@ -175,7 +175,7 @@ func launchNetworkNode(
 	)
 }
 
-func launchManager(
+func launchCoordinator(
 	id string,
 	snapshotIn chan networknode.NetworkSnapshot,
 	peerUpdateIn chan peers.PeerUpdate,
@@ -183,12 +183,12 @@ func launchManager(
 	hallRequestOut chan [][2]bool,
 	lightsOut chan coordinator.RequestLights,
 ) {
-	go coordinator.RunManager(
-		coordinator.ManagerIn{
+	go coordinator.RunCoordinator(
+		coordinator.CoordinatorIn{
 			Snapshot:   snapshotIn,
 			PeerUpdate: peerUpdateIn,
 		},
-		coordinator.ManagerOut{
+		coordinator.CoordinatorOut{
 			CabRequests:  cabRequestOut,
 			HallRequests: hallRequestOut,
 			Lights:       lightsOut,
@@ -317,7 +317,7 @@ func main() {
 		peerUpdateCh,
 		initStateCh)
 
-	launchManager(
+	launchCoordinator(
 		cfg.ID,
 		snapshotCh,
 		peerUpdateCh,
