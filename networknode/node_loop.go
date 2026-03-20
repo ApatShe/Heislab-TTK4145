@@ -145,7 +145,7 @@ func RunNetworkNode(
 			currentSnapshot.Iter = iter
 			knownStates[id] = currentSnapshot
 
-			currentSnapshot = AdvanceCabToActive(currentSnapshot, livePeerIDs, knownStates)
+			currentSnapshot = advanceCabToActive(currentSnapshot, livePeerIDs, knownStates)
 
 			select {
 			case snapshotTx <- currentSnapshot:
@@ -235,12 +235,12 @@ func RunNetworkNode(
 
 			knownStates[receivedSnapshot.NodeID] = receivedSnapshot
 
-			currentSnapshot = FilteredMessage(currentSnapshot, receivedSnapshot, currentSnapshot.ReconnectedNode)
+			currentSnapshot = filteredMessage(currentSnapshot, receivedSnapshot, currentSnapshot.ReconnectedNode)
 
 			currentSnapshot = propagateResetsToOwn(currentSnapshot, receivedSnapshot)
 			currentSnapshot = adoptHallRequestsFromPeers(currentSnapshot)
-			currentSnapshot = AdvanceHallToActive(currentSnapshot, livePeerIDs, knownStates)
-			currentSnapshot = AdvanceCabToActive(currentSnapshot, livePeerIDs, knownStates)
+			currentSnapshot = advanceHallToActive(currentSnapshot, livePeerIDs, knownStates)
+			currentSnapshot = advanceCabToActive(currentSnapshot, livePeerIDs, knownStates)
 
 			// Settle own UNKNOWN halls — any that survived the merge are
 			// genuinely unknown to all peers, so INACTIVE is correct.
