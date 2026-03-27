@@ -7,14 +7,14 @@ import (
 	"Heislab/node_communication/peers"
 )
 
-// ManagerIn groups all channels that deliver events into RunManager.
-type ManagerIn struct {
+// CoordinatorIn groups all channels that deliver events into RunCoordinator.
+type CoordinatorIn struct {
 	Snapshot   <-chan networknode.NetworkSnapshot // consensus snapshot from network node
 	PeerUpdate <-chan peers.PeerUpdate            // peer list changes from network node
 }
 
-// ManagerOut groups all channels that RunManager writes into.
-type ManagerOut struct {
+// CoordinatorOut groups all channels that RunCoordinator writes into.
+type CoordinatorOut struct {
 	CabRequests  chan<- []bool        // consensused cab requests → elevator FSM
 	HallRequests chan<- [][2]bool     // HRA-assigned matrix → elevator
 	Lights       chan<- RequestLights // HRA-assigned request matrix and active cabRequest → lights
@@ -112,12 +112,8 @@ func extractDesignatedHallRequests(delegatedHallRequests map[string][][2]bool, i
 	return delegatedHallRequests[id]
 }
 
-func RunManager(in ManagerIn, out ManagerOut, id string) {
+func RunCoordinator(in CoordinatorIn, out CoordinatorOut, id string) {
 	activeElevators := map[string]bool{id: true} // always treat self as active
-	//doorInitSent := false
-
-	//var lastHallRequests [][2]bool
-	//var lastHallLights [][2]bool
 
 	for {
 		select {
@@ -133,23 +129,14 @@ func RunManager(in ManagerIn, out ManagerOut, id string) {
 
 		case snapshot := <-in.Snapshot:
 
-			log.Log("[Manager] Received snapshot iter=%d from node %s with %d elevators, cab requests: %v, hall requests: %v", snapshot.Iter, snapshot.NodeID, len(snapshot.Elevators), snapshot.Elevators[id].CabRequests, snapshot.HallRequests)
-			// Always add any node present in the snapshot as active
-			//if !doorInitSent {
-			//	doorInitSent = true
-			//	ownState := snapshot.Elevators[id]
-			//	select {
-			//	case out.DoorInit <- ownState.DoorOpen:
-			//	default:
-			//	}
-			//}
+			log.Log("[Coordinator] Received snapshot iter=%d from node %s with %d elevators, cab requests: %v, hall requests: %v", snapshot.Iter, snapshot.NodeID, len(snapshot.Elevators), snapshot.Elevators[id].CabRequests, snapshot.HallRequests)
 
 			consensusCabRequests := snapshot.Elevators[id].CabRequests
 			consensusCabRequestsBool := make([]bool, len(consensusCabRequests))
 			for i, requestState := range consensusCabRequests {
 				consensusCabRequestsBool[i] = networknode.RequestStateToBool(requestState)
 			}
-			log.Log("[Manager] Sending Consensus cab requests to FSM for self: %v", consensusCabRequestsBool)
+			log.Log("[Coordinator] Sending Consensus cab requests to FSM for self: %v", consensusCabRequestsBool)
 			select {
 			case out.CabRequests <- consensusCabRequestsBool:
 			default:
@@ -161,10 +148,6 @@ func RunManager(in ManagerIn, out ManagerOut, id string) {
 				HallRequests: consensusHallRequests,
 				States:       extractActiveElevatorStates(snapshot, activeElevators),
 			}
-
-			//if len(hraInput.States) == 0 {
-			//	break
-			//}
 
 			delegatedHallRequests := OutputHallRequestAssigner(hraInput)
 			designatedHallRequests := extractDesignatedHallRequests(delegatedHallRequests, id)

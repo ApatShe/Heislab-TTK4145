@@ -10,13 +10,13 @@ import (
 //
 // Two distinct order paths:
 //   - in.CabButton  — cab button events arriving directly from hardware polling.
-//   - in.HallRequests — full hall-request matrix pushed by the manager after
+//   - in.HallRequests — full hall-request matrix pushed by the coordinator after
 //     the HRA has run and the network has reached consensus.
 //
 // Hall button presses never arrive here directly; they travel:
 //
-//	button → RunNetworkNode → manager/HRA → network broadcast → consensus
-//	→ manager pushes [][2]bool matrix → in.HallRequests → here.
+//	button → RunNetworkNode → coordinator/HRA → network broadcast → consensus
+//	→ coordinator pushes [][2]bool matrix → in.HallRequests → here.
 func RunElevator(in ElevatorIn, out ElevatorOut) {
 	// Block until NetworkNode signals that peer state has been recovered.
 	// This prevents the motor from starting before cab requests are known.
@@ -96,7 +96,7 @@ func RunElevator(in ElevatorIn, out ElevatorOut) {
 			log.Log("[elevator] served: %v", served)
 
 		case newHallRequests := <-in.HallRequests:
-			// log.Log("Hall request update from manager\n")
+			// log.Log("Hall request update from coordinator\n")
 			served, commands = FsmOnHallRequestsUpdate(elevator, newHallRequests)
 
 		case floor := <-in.Floor:

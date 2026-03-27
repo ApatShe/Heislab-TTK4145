@@ -150,7 +150,7 @@ func mergePeerEntry(
 				// cyclic counter).
 				// Exception: if we are reconnecting, the network's ACTIVE
 				// represents a request we served while offline — we must adopt
-				// it so the manager can re-assign the floor.
+				// it so the coordinator can re-assign the floor.
 				if localIsReconnecting {
 					log.Log("[MERGE] own entry floor=%d btn=%d: INACTIVE→ACTIVE allowed (localIsReconnecting)", floor, btn)
 					merged[floor][btn] = received[floor][btn]

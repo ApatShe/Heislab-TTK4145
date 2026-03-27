@@ -77,7 +77,7 @@ func RunNetworkNode(
 		if currentSnapshot.Elevators[id].Floor == -1 {
 			return
 		}
-		log.Log("[SNAPSHOT->MGR] sending snapshot to manager: hallRequests=%v floor=%d, Service Status: %t",
+		log.Log("[SNAPSHOT->MGR] sending snapshot to coordinator: hallRequests=%v floor=%d, Service Status: %t",
 			currentSnapshot.HallRequests[id], currentSnapshot.Elevators[id].Floor, currentSnapshot.Elevators[id].IsOutOfService)
 		select {
 		case out.Snapshot <- currentSnapshot:

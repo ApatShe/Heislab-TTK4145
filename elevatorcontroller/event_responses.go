@@ -62,7 +62,7 @@ func replaceCabRequests(elevator *Elevator, cabRequests []bool) {
 }
 
 // FsmOnHallRequestsUpdate replaces the elevator's hall-request matrix with the
-// HRA-assigned matrix received from the manager after network consensus.
+// HRA-assigned matrix received from the coordinator after network consensus.
 // If the elevator is idle it acts immediately on any newly assigned requests.
 func FsmOnHallRequestsUpdate(elevator *Elevator, newRequests [][2]bool) ([]elevatordriver.ButtonEvent, []ElevatorCommand) {
 	log.Log("[FSM] HallRequestsUpdate: floor=%d dir=%s beh=%s requests=%v", elevator.Floor, DirnToString(elevator.Direction), elevator.Behaviour.String(), newRequests)
